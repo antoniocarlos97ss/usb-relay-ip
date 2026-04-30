@@ -1,0 +1,14 @@
+dist/
+build/
+__pycache__/
+*.pyc
+*.spec
+*.pkg
+*.pyz
+*.toc
+*.pyo
+.pytest_cache/
+*.egg-info/
+*.log
+.vscode/
+.idea/
