@@ -107,3 +107,11 @@ class HostApiClient:
 
     def is_connected(self) -> bool:
         return self._connected
+
+    def bind_device(self, busid: str) -> bool:
+        data = self._request("POST", f"/devices/{busid}/bind")
+        return data is not None
+
+    def unbind_device(self, busid: str) -> bool:
+        data = self._request("POST", f"/devices/{busid}/unbind")
+        return data is not None

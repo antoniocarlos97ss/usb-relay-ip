@@ -149,7 +149,17 @@ def run_headless():
                     logger.info(f"Attached {matched.busid}")
                 else:
                     logger.error(f"Attach failed {matched.busid}: {result.message}")
-                    all_done = False
+                    logger.info(f"Trying unbind+rebind on host for {matched.busid}")
+                    api_client.unbind_device(matched.busid)
+                    time.sleep(2)
+                    api_client.bind_device(matched.busid)
+                    time.sleep(2)
+                    result2 = usbip_wrapper.attach_device(config.host_ip, matched.busid)
+                    if result2.success:
+                        logger.info(f"Attached {matched.busid} after unbind+rebind")
+                    else:
+                        logger.error(f"Attach still failed after unbind+rebind: {result2.message}")
+                        all_done = False
             elif not (matched and matched.state == "Attached"):
                 all_done = False
 
@@ -181,6 +191,7 @@ def main():
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion("1.0.0")
         app.setStyle("Fusion")
+        app.commitDataRequest.connect(lambda request, manager: app.quit())
     except Exception as exc:
         _write_crash(f"QApplication init failed: {exc}")
         return
@@ -225,7 +236,7 @@ def main():
 
     def _quit():
         logger.info("Quitting application")
-        window.quit_app()
+        window.quit_app_with_detach()
         tray.hide()
         app.quit()
 

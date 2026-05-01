@@ -166,7 +166,23 @@ class ClientMainWindow(QMainWindow):
         else:
             logger.error(f"Attach failed for {busid}: {message}")
             self._tray.show_notification("USBRelay", t("notify.attach_failed", busid=busid, msg=message))
+            self._retry_attach_stale(busid)
         self._poller_refresh()
+
+    def _retry_attach_stale(self, busid: str):
+        logger.info(f"Trying to recover stale device {busid} via host unbind+rebind")
+        self._api_client.unbind_device(busid)
+        import time
+        time.sleep(2)
+        self._api_client.bind_device(busid)
+        time.sleep(2)
+        config = config_manager.load_config()
+        worker = usbip_worker.AttachWorker(config.host_ip, busid)
+        worker.finished.connect(self._on_attach_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
+        self._workers.append(worker)
+        worker.start()
 
     def _detach_device(self, busid: str):
         logger.info(f"Detaching device {busid}")
@@ -302,9 +318,31 @@ class ClientMainWindow(QMainWindow):
         self.hide()
         self._tray.show_notification("USBRelay", t("notify.tray_client"))
 
+    def _detach_all_devices(self):
+        if not self._port_map:
+            return
+        logger.info(f"Detaching {len(self._port_map)} devices before quit")
+        from client.core import usbip_wrapper
+        import time
+        for busid, port in list(self._port_map.items()):
+            logger.info(f"Detaching {busid} (port {port})")
+            result = usbip_wrapper.detach_device(port)
+            if result.success:
+                logger.info(f"Detached {busid}")
+                self._tray.show_notification("USBRelay", t("notify.detached", busid=busid))
+            else:
+                logger.warning(f"Detach failed for {busid}: {result.message}")
+            time.sleep(0.5)
+        self._port_map.clear()
+
     def quit_app(self):
         if hasattr(self, "_poller") and self._poller:
             self._poller.devices_fetched.disconnect()
             self._poller.connection_changed.disconnect()
             self._poller.stop()
             self._poller = None
+
+    def quit_app_with_detach(self):
+        logger.info("Quitting app with detach")
+        self._detach_all_devices()
+        self.quit_app()
