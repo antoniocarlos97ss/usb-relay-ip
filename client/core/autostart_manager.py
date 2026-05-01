@@ -82,20 +82,20 @@ def unregister_logon_run() -> bool:
         return False
 
 
-def register_startup(exe_path: str) -> bool:
+def register_startup(exe_path: str) -> tuple[bool, bool]:
     logon_ok = register_logon_run(exe_path)
     boot_ok = register_boot_task(exe_path)
     if logon_ok:
         logger.info("Logon startup configured (HKCU Run)")
     if boot_ok:
         logger.info("Boot startup configured (schtasks ONSTART SYSTEM)")
-    return logon_ok
+    return logon_ok, boot_ok
 
 
-def unregister_startup() -> bool:
-    unregister_logon_run()
-    unregister_boot_task()
-    return True
+def unregister_startup() -> tuple[bool, bool]:
+    logon_ok = unregister_logon_run()
+    boot_ok = unregister_boot_task()
+    return logon_ok, boot_ok
 
 
 def is_registered() -> bool:
