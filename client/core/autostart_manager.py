@@ -1,6 +1,8 @@
 import logging
+import os
 import subprocess
 import sys
+import tempfile
 import winreg
 
 logger = logging.getLogger(__name__)
@@ -26,21 +28,71 @@ def _run_schtasks(args: list[str]) -> tuple[bool, str, str]:
         return False, "", "schtasks command timed out"
 
 
+_BOOT_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>USBRelayClient - boot-time headless auto-attach</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
+      <Delay>PT30S</Delay>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <AllowHardTerminate>true</AllowHardTerminate>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe_path}</Command>
+    </Exec>
+  </Actions>
+</Task>"""
+
+
 def register_boot_task(exe_path: str) -> bool:
-    success, stdout, stderr = _run_schtasks([
-        "/Create",
-        "/TN", BOOT_TASK_NAME,
-        "/TR", f'"{exe_path}"',
-        "/SC", "ONSTART",
-        "/RU", "SYSTEM",
-        "/RL", "HIGHEST",
-        "/F",
-    ])
-    if success:
-        logger.info(f"Boot task created: {BOOT_TASK_NAME}")
-    else:
-        logger.warning(f"Boot task failed (may need admin): {stderr}")
-    return success
+    try:
+        clean_path = exe_path.strip('"')
+        xml = _BOOT_TASK_XML.replace("{exe_path}", clean_path)
+        fd, tmp_path = tempfile.mkstemp(suffix=".xml", text=True)
+        try:
+            os.write(fd, xml.encode("utf-16-le"))
+            os.close(fd)
+            success, stdout, stderr = _run_schtasks([
+                "/Create",
+                "/TN", BOOT_TASK_NAME,
+                "/XML", tmp_path,
+                "/F",
+            ])
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        if success:
+            logger.info(f"Boot task created via XML: {BOOT_TASK_NAME}")
+        else:
+            logger.warning(f"Boot task failed: {stderr}")
+        return success
+
+    except Exception as exc:
+        logger.error(f"Failed to create boot task: {exc}")
+        return False
 
 
 def unregister_boot_task() -> bool:
