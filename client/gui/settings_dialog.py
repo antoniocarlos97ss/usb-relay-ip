@@ -102,14 +102,19 @@ class ClientSettingsDialog(QWidget):
         config_manager.update_api_key(self._api_key_input.text())
         config_manager.update_poll_interval(self._poll_spin.value())
 
-        autostart_ok = config_manager.update_autostart(self._autostart_check.isChecked())
+        logon_ok, boot_ok = config_manager.update_autostart(self._autostart_check.isChecked())
 
-        if autostart_ok:
-            if self._autostart_check.isChecked():
-                QMessageBox.information(self, t("settings.autostart"), t("settings.autostart_enabled"))
+        if self._autostart_check.isChecked():
+            if logon_ok:
+                msg = t("settings.autostart_logon_ok")
+                if boot_ok:
+                    msg += "\n" + t("settings.autostart_boot_ok")
+                else:
+                    msg += "\n\n" + t("settings.autostart_boot_needs_admin")
+                QMessageBox.information(self, t("settings.autostart"), msg)
             else:
-                QMessageBox.information(self, t("settings.autostart"), t("settings.autostart_disabled"))
+                QMessageBox.warning(self, t("settings.autostart"), t("settings.autostart_failed"))
         else:
-            QMessageBox.warning(self, t("settings.autostart"), t("settings.autostart_failed"))
+            QMessageBox.information(self, t("settings.autostart"), t("settings.autostart_disabled"))
 
         self.settings_applied.emit()

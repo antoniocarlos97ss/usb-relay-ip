@@ -134,7 +134,7 @@ def update_poll_interval(seconds: int) -> None:
     save_config(config)
 
 
-def update_autostart(enabled: bool) -> bool:
+def update_autostart(enabled: bool) -> tuple[bool, bool]:
     config = load_config()
     config.autostart_with_windows = enabled
     save_config(config)
@@ -151,4 +151,5 @@ def update_autostart(enabled: bool) -> bool:
         return register_startup(exe)
     else:
         from .autostart_manager import unregister_startup
-        return unregister_startup()
+        unregister_startup()
+        return True, True
