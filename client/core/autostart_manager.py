@@ -72,7 +72,9 @@ def register_boot_task(exe_path: str) -> bool:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
         try:
             with open(tmp_fd, "wb") as f:
-                f.write(xml.encode("utf-16-le"))
+                # utf-16 automatically prepends the BOM (\xFF\xFE) that
+                # schtasks /Create /XML requires to parse the encoding
+                f.write(xml.encode("utf-16"))
             success, stdout, stderr = _run_schtasks([
                 "/Create",
                 "/TN", BOOT_TASK_NAME,
