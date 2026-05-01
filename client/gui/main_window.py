@@ -38,6 +38,7 @@ class ClientMainWindow(QMainWindow):
         super().__init__()
         self._tray = tray_icon
         self._port_map: dict[str, int] = {}
+        self._shutting_down = False
 
         config = config_manager.load_config()
         self._api_client = HostApiClient(
@@ -329,10 +330,11 @@ class ClientMainWindow(QMainWindow):
             result = usbip_wrapper.detach_device(port)
             if result.success:
                 logger.info(f"Detached {busid}")
-                self._tray.show_notification("USBRelay", t("notify.detached", busid=busid))
+                if not self._shutting_down:
+                    self._tray.show_notification("USBRelay", t("notify.detached", busid=busid))
             else:
                 logger.warning(f"Detach failed for {busid}: {result.message}")
-            time.sleep(0.5)
+            time.sleep(0.3)
         self._port_map.clear()
 
     def quit_app(self):
@@ -340,9 +342,13 @@ class ClientMainWindow(QMainWindow):
             self._poller.devices_fetched.disconnect()
             self._poller.connection_changed.disconnect()
             self._poller.stop()
+            self._poller.wait(3000)
             self._poller = None
 
     def quit_app_with_detach(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
         logger.info("Quitting app with detach")
         self._detach_all_devices()
         self.quit_app()

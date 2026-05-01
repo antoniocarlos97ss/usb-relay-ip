@@ -198,7 +198,6 @@ def main():
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion("1.0.0")
         app.setStyle("Fusion")
-        app.commitDataRequest.connect(lambda request, manager: app.quit())
     except Exception as exc:
         _write_crash(f"QApplication init failed: {exc}")
         return
@@ -249,6 +248,12 @@ def main():
 
     tray._quit_action.triggered.disconnect()
     tray._quit_action.triggered.connect(_quit)
+
+    # commitDataRequest fires on Windows shutdown/restart/logoff.
+    # The signal emits exactly ONE argument (QSessionManager).
+    # We must detach all USB devices before quitting, otherwise the VHCI
+    # driver keeps an active connection and the system hangs on "Reiniciando".
+    app.commitDataRequest.connect(lambda _manager: _quit())
 
     tray.show()
     if "--minimized" in sys.argv:
