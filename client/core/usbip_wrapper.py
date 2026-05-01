@@ -1,27 +1,61 @@
 import logging
+import os
 import re
+import shutil
 import subprocess
 import sys
 from typing import Optional
 
-from shared.constants import USBIPD_EXE
+from shared.constants import USBIP_EXE
 from shared.models import AttachedDevice, CommandResult
 
 logger = logging.getLogger(__name__)
 
 
+def _find_usbip() -> Optional[str]:
+    if getattr(sys, "frozen", False):
+        bundled = os.path.join(sys._MEIPASS, "usbipd-install", "USBip", f"{USBIP_EXE}.exe")
+    else:
+        bundled = os.path.join(os.path.dirname(__file__), "..", "..", "usbipd-install", "USBip", f"{USBIP_EXE}.exe")
+    if os.path.exists(bundled):
+        return bundled
+
+    found = shutil.which(USBIP_EXE)
+    if found:
+        return found
+
+    paths = [
+        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "USBip", f"{USBIP_EXE}.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "USBip", f"{USBIP_EXE}.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "USBip", f"{USBIP_EXE}.exe"),
+    ]
+
+    for p in paths:
+        if os.path.exists(p):
+            return p
+
+    return None
+
+
 def _run_command(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
+    exe_path = _find_usbip()
+    if not exe_path:
+        return -1, "", f"Executable not found: {USBIP_EXE}"
+
+    full_args = [exe_path] + args
+
     try:
         proc = subprocess.run(
-            args,
+            full_args,
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=os.path.dirname(exe_path),
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         return proc.returncode, proc.stdout, proc.stderr
     except FileNotFoundError:
-        return -1, "", f"Executable not found: {args[0]}"
+        return -1, "", f"Executable not found: {exe_path}"
     except subprocess.TimeoutExpired:
         return -2, "", "Command timed out"
     except Exception as exc:
@@ -29,25 +63,53 @@ def _run_command(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
 
 
 def is_available() -> bool:
-    _, stdout, _ = _run_command([USBIPD_EXE, "--version"])
-    return bool(stdout.strip()) and "usbipd" in stdout.lower()
+    return _find_usbip() is not None
+
+
+def list_remote_devices(host_ip: str) -> list[dict]:
+    returncode, stdout, stderr = _run_command(["list", "-r", host_ip])
+    if returncode != 0:
+        logger.warning(f"usbip list failed: {stderr}")
+        return []
+
+    devices: list[dict] = []
+    for line in stdout.strip().splitlines():
+        stripped = line.strip()
+        match = re.match(
+            r"^\s*([^:]+):\s*(.*)$", stripped,
+        )
+        if match:
+            line_content = match.group(2).strip()
+            dev_match = re.match(
+                r"busid\s*=\s*(\S+).*?([0-9a-fA-F]{4})\s*:\s*([0-9a-fA-F]{4})",
+                line_content,
+            )
+            if dev_match:
+                devices.append({
+                    "busid": dev_match.group(1),
+                    "vid": dev_match.group(2).lower(),
+                    "pid": dev_match.group(3).lower(),
+                })
+
+    return devices
 
 
 def attach_device(host_ip: str, busid: str) -> CommandResult:
     returncode, stdout, stderr = _run_command(
-        [USBIPD_EXE, "attach", "--remote", host_ip, "--busid", busid]
+        ["attach", "-r", host_ip, "-b", busid]
     )
     success = returncode == 0
     if success:
         message = f"Device {busid} attached from {host_ip}."
     else:
-        message = f"Failed to attach device {busid} from {host_ip}."
+        detail = stderr.strip() or stdout.strip()
+        message = f"Failed to attach {busid}: {detail}" if detail else f"Failed to attach device {busid} from {host_ip}."
     return CommandResult(success=success, message=message, stdout=stdout, stderr=stderr)
 
 
 def detach_device(port: int) -> CommandResult:
     returncode, stdout, stderr = _run_command(
-        [USBIPD_EXE, "detach", "--port", str(port)]
+        ["detach", "-p", str(port)]
     )
     success = returncode == 0
     if success:
@@ -58,38 +120,32 @@ def detach_device(port: int) -> CommandResult:
 
 
 def list_attached() -> list[AttachedDevice]:
-    returncode, stdout, _ = _run_command([USBIPD_EXE, "list"])
+    returncode, stdout, _ = _run_command(["port"])
     if returncode != 0 or not stdout.strip():
         return []
 
     attached: list[AttachedDevice] = []
-    lines = stdout.strip().splitlines()
-    for line in lines:
+    for line in stdout.strip().splitlines():
         stripped = line.strip()
-        match = re.match(
-            r"(\d+-\d+)\s+(\S+)(?:\s+\S+)*\s+(.*?)\s+(Attached|Shared|Not shared)\s*$",
-            stripped,
-        )
-        if match:
-            busid, vid_pid, description, state = match.groups()
-            if state == "Attached":
-                vid, pid = "0000", "0000"
-                vid_pid_match = re.match(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{4})", vid_pid)
-                if vid_pid_match:
-                    vid = vid_pid_match.group(1).lower()
-                    pid = vid_pid_match.group(2).lower()
+        busid_match = re.search(r"busid\s*[=:]\s*(\S+)", stripped, re.IGNORECASE)
+        port_match = re.search(r"port\s*[=:]\s*(\d+)", stripped, re.IGNORECASE)
+        vid_match = re.search(r"([0-9a-fA-F]{4})\s*:\s*([0-9a-fA-F]{4})", stripped)
 
-                port_match = re.search(r"\(?port\s*(\d+)\)?", stripped, re.IGNORECASE)
-                port = 0
-                if port_match:
-                    port = int(port_match.group(1))
+        if port_match:
+            port = int(port_match.group(1))
+            busid = busid_match.group(1) if busid_match else ""
+            vid, pid = "0000", "0000"
+            if vid_match:
+                vid = vid_match.group(1).lower()
+                pid = vid_match.group(2).lower()
 
-                attached.append(AttachedDevice(
-                    port=port,
-                    busid=busid,
-                    vid=vid,
-                    pid=pid,
-                ))
+            attached.append(AttachedDevice(
+                port=port,
+                busid=busid,
+                vid=vid,
+                pid=pid,
+            ))
+
     return attached
 
 

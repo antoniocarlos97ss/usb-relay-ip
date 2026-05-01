@@ -3,10 +3,12 @@ from typing import Optional
 
 import httpx
 
-from shared.constants import API_RETRY_COUNT, API_TIMEOUT, DEFAULT_API_PORT
+from shared.constants import DEFAULT_API_PORT
 from shared.models import HealthStatus, UsbDevice
 
 logger = logging.getLogger(__name__)
+
+TIMEOUT = 3.0
 
 
 class HostApiClient:
@@ -52,39 +54,31 @@ class HostApiClient:
 
     def _request(self, method: str, path: str) -> Optional[dict]:
         url = f"{self.base_url}/api/v1{path}"
-        last_error = None
 
-        for attempt in range(1, API_RETRY_COUNT + 1):
-            try:
-                with httpx.Client(timeout=API_TIMEOUT) as client:
-                    response = client.request(
-                        method=method,
-                        url=url,
-                        headers=self._headers(),
-                    )
-                    if response.status_code == 200:
-                        self._connected = True
-                        return response.json()
-                    elif response.status_code == 401:
-                        logger.error("API key rejected by host")
-                        self._connected = False
-                        return None
-                    else:
-                        logger.warning(f"Host returned {response.status_code}: {response.text[:200]}")
-                        return None
-            except httpx.ConnectError as exc:
-                last_error = f"Connection refused to {url}: {exc}"
-            except httpx.TimeoutException as exc:
-                last_error = f"Timeout connecting to {url}: {exc}"
-            except Exception as exc:
-                last_error = f"Error connecting to {url}: {exc}"
-
-            if attempt < API_RETRY_COUNT:
-                logger.debug(f"Retry {attempt}/{API_RETRY_COUNT} after: {last_error}")
-
-        logger.error(last_error)
-        self._connected = False
-        return None
+        try:
+            with httpx.Client(timeout=TIMEOUT) as client:
+                response = client.request(
+                    method=method,
+                    url=url,
+                    headers=self._headers(),
+                )
+                if response.status_code == 200:
+                    self._connected = True
+                    return response.json()
+                elif response.status_code == 401:
+                    logger.error("API key rejected by host")
+                    self._connected = False
+                    return None
+                else:
+                    logger.warning(f"Host returned {response.status_code}")
+                    return None
+        except (httpx.ConnectError, httpx.TimeoutException):
+            self._connected = False
+            return None
+        except Exception as exc:
+            logger.debug(f"Request error: {exc}")
+            self._connected = False
+            return None
 
     def get_devices(self) -> list[UsbDevice]:
         data = self._request("GET", "/devices")

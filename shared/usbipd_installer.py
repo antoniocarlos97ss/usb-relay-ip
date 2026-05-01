@@ -1,88 +1,109 @@
 import os
 import subprocess
 import sys
-import tempfile
-
-USBIPD_RELEASES_URL = "https://github.com/dorssel/usbipd-win/releases/latest"
-USBIPD_MSI_ASSET = "usbipd-win_x64.msi"
+from pathlib import Path
 
 
-def _download_with_powershell(url: str, dest: str, progress_callback=None) -> bool:
-    try:
-        script = (
-            "$ProgressPreference='SilentlyContinue';"
-            f"try{{Invoke-WebRequest -Uri '{url}' -OutFile '{dest}' -UseBasicParsing -TimeoutSec 180}}"
-            "catch{exit 1}"
+def _list_bundled_installers() -> list[str]:
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).resolve().parent.parent
+
+    install_dir = base / "usbipd-install"
+    if not install_dir.exists():
+        return []
+
+    files = []
+    for p in install_dir.iterdir():
+        if p.suffix.lower() in (".msi", ".exe"):
+            files.append(str(p))
+    return sorted(files)
+
+
+def _find_installer(prefix: str) -> str | None:
+    for path in _list_bundled_installers():
+        name = os.path.basename(path).lower()
+        if name.startswith(prefix.lower()):
+            return path
+    return None
+
+
+def install_bundled(progress_callback=None) -> tuple[bool, str]:
+    installer = _find_installer("usbipd-win") or _find_installer("usbip-")
+    if not installer:
+        files = _list_bundled_installers()
+        names = ", ".join(os.path.basename(f) for f in files) if files else "nenhum"
+        return (
+            False,
+            f"Instalador não encontrado. Disponíveis: {names}",
         )
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=200,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
 
-        if proc.returncode != 0:
-            print(f"PowerShell error: {proc.stderr.strip()}", file=sys.stderr)
-            return False
-
-        return os.path.exists(dest) and os.path.getsize(dest) > 50000
-    except subprocess.TimeoutExpired:
-        print("PowerShell download timed out", file=sys.stderr)
-        return False
-    except Exception as e:
-        print(f"Download error: {e}", file=sys.stderr)
-        return False
-
-
-def download_and_install(progress_callback=None) -> tuple[bool, str]:
-    tmp_dir = tempfile.mkdtemp()
-    msi_path = os.path.join(tmp_dir, "usbipd-win_x64.msi")
+    name = os.path.basename(installer).lower()
+    is_msi = name.endswith(".msi")
 
     try:
-        download_url = f"{USBIPD_RELEASES_URL}/download/{USBIPD_MSI_ASSET}"
-
         if progress_callback:
-            progress_callback(0, None)
+            label = f"Instalando {os.path.basename(installer)}..."
+            progress_callback(-1, label)
 
-        if not _download_with_powershell(download_url, msi_path, progress_callback):
-            return (
-                False,
-                "Falha ao baixar o instalador do usbipd-win.\n\n"
-                "Possíveis causas:\n"
-                "- Sem conexão com a internet\n"
-                "- Firewall bloqueando o acesso\n"
-                "- GitHub inacessível\n\n"
-                "Você pode instalar manualmente:\n"
-                "https://github.com/dorssel/usbipd-win/releases",
+        if is_msi:
+            proc = subprocess.run(
+                ["msiexec", "/i", installer, "/quiet", "/norestart"],
+                capture_output=True, text=True, timeout=180,
             )
+            ok_codes = (0, 3010)
+        else:
+            proc = subprocess.run(
+                [installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                capture_output=True, text=True, timeout=180,
+            )
+            ok_codes = (0,)
 
-        file_size = os.path.getsize(msi_path)
-        if file_size < 50000:
-            return False, "Instalador baixado está corrompido (tamanho insuficiente)."
+        if proc.returncode not in ok_codes:
+            return False, f"Erro na instalação (código {proc.returncode})"
 
-        if progress_callback:
-            progress_callback(-1, "Instalando usbipd-win (privilégios de Administrador necessários)...")
-
-        proc = subprocess.run(
-            ["msiexec", "/i", msi_path, "/quiet", "/norestart"],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-
-        if proc.returncode not in (0, 3010):
-            stderr = proc.stderr.strip()
-            return False, f"Erro na instalação (código {proc.returncode})\n{stderr}"
-
-        return True, "usbipd-win instalado com sucesso."
+        return True, f"{os.path.basename(installer)} instalado com sucesso."
     except subprocess.TimeoutExpired:
         return False, "Instalação excedeu o tempo limite."
     except Exception as e:
         return False, f"Erro: {e}"
-    finally:
-        try:
-            os.unlink(msi_path)
-            os.rmdir(tmp_dir)
-        except Exception:
-            pass
+
+
+def install_for_client(progress_callback=None) -> tuple[bool, str]:
+    installer = _find_installer("usbip-")
+    if not installer:
+        installer = _find_installer("usbipd-win")
+
+    if not installer:
+        return (
+            False,
+            "Instalador do usbip-win2 não encontrado nos arquivos do programa.\n\n"
+            "Instale manualmente: https://github.com/vadimgrn/usbip-win2/releases",
+        )
+
+    name = os.path.basename(installer).lower()
+
+    try:
+        if progress_callback:
+            progress_callback(-1, f"Instalando {os.path.basename(installer)}...")
+
+        if name.endswith(".msi"):
+            proc = subprocess.run(
+                ["msiexec", "/i", installer, "/quiet", "/norestart"],
+                capture_output=True, text=True, timeout=180,
+            )
+        else:
+            proc = subprocess.run(
+                [installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                capture_output=True, text=True, timeout=180,
+            )
+
+        if proc.returncode not in (0, 3010, None):
+            return False, f"Erro na instalação (código {proc.returncode})"
+
+        return True, f"{os.path.basename(installer)} instalado com sucesso."
+    except subprocess.TimeoutExpired:
+        return False, "Instalação excedeu o tempo limite."
+    except Exception as e:
+        return False, f"Erro: {e}"

@@ -49,7 +49,7 @@ class DeviceMonitor(QThread):
 
     def stop(self):
         self._running = False
-        self.wait(timeout=3000)
+        self.wait(3000)
 
     def set_poll_interval(self, seconds: int):
         self._poll_interval = max(1, seconds)

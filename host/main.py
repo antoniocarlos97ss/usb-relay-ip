@@ -49,26 +49,21 @@ def _ensure_usbipd(parent=None) -> bool:
         return False
 
     progress = QProgressDialog(
-        t("install.downloading"), t("btn.cancel"), 0, 100, parent,
+        t("install.installing"), t("btn.cancel"), 0, 0, parent,
     )
     progress.setWindowModality(Qt.WindowModality.WindowModal)
     progress.setMinimumDuration(0)
-    progress.setValue(0)
     progress.show()
 
     QApplication.processEvents()
 
     def on_progress(percent, msg=None):
-        if percent >= 0:
-            progress.setValue(percent)
-            progress.setLabelText(t("install.downloading") + f" {percent}%")
-        elif msg:
+        if msg:
             progress.setLabelText(msg)
-            progress.setValue(100)
         QApplication.processEvents()
 
-    from shared.usbipd_installer import download_and_install
-    success, message = download_and_install(progress_callback=on_progress)
+    from shared.usbipd_installer import install_bundled
+    success, message = install_bundled(progress_callback=on_progress)
     progress.close()
 
     if not success:
@@ -85,14 +80,6 @@ def _ensure_usbipd(parent=None) -> bool:
         t("install.success_text"),
     )
 
-    import subprocess
-    try:
-        subprocess.run(
-            ["refreshenv"], shell=True, capture_output=True, timeout=5,
-        )
-    except Exception:
-        pass
-
     from host.core import usbipd_wrapper
     return usbipd_wrapper.is_available()
 
@@ -106,11 +93,24 @@ def main():
     app.setApplicationVersion("1.0.0")
     app.setStyle("Fusion")
 
+    def _excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        logging.getLogger(__name__).critical(f"Unhandled exception:\n{tb}")
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+
     if not _ensure_usbipd():
         sys.exit(1)
 
-    icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
-    connected_icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon_connected.ico")
+    if getattr(sys, "frozen", False):
+        assets_dir = os.path.join(sys._MEIPASS, "assets")
+    else:
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+
+    icon_path = os.path.join(assets_dir, "icon.ico")
+    connected_icon_path = os.path.join(assets_dir, "icon_connected.ico")
     if not os.path.exists(icon_path):
         icon_path = ""
         connected_icon_path = ""

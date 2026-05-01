@@ -1,72 +1,100 @@
-# USBRelay
+# USB Relay IP
 
 Passagem USB do host Hyper-V para VMs convidadas — simplificada.
 
-O USBRelay é uma aplicação desktop Windows de dois componentes que encapsula o `usbipd-win` com uma GUI amigável e uma camada de comunicação REST, eliminando a necessidade de interação manual por linha de comando.
+O USB Relay IP é uma aplicação desktop Windows de dois componentes que encapsula o `usbipd-win` (host) e o `usbip-win2` (client) com uma GUI amigável e uma camada de comunicação REST, eliminando a necessidade de interação manual por linha de comando.
 
 ## Componentes
 
 | Componente | Onde Instalar | Finalidade |
 |---|---|---|
-| **USBRelay Host** | Máquina física host Hyper-V | Detecta dispositivos USB e os compartilha via API REST |
-| **USBRelay Client** | VM Windows convidada | Conecta dispositivos USB compartilhados dentro da VM |
+| **USBRelay Host** | Máquina física host Hyper-V | Detecta dispositivos USB, compartilha via `usbipd-win` e expõe API REST |
+| **USBRelay Client** | VM Windows convidada | Conecta dispositivos USB compartilhados via `usbip-win2` (driver VHCI) |
 
 ## Pré-requisitos
 
 ### No Host Hyper-V
 
-1. Instale o [usbipd-win](https://github.com/dorssel/usbipd-win/releases) >= 4.0
+1. Windows 10/11 com Hyper-V habilitado
 2. Habilite o switch virtual externo do Hyper-V (para comunicação VM ↔ host)
-3. Execute o USBRelay Host **como Administrador**
+3. O instalador do Host instala o `usbipd-win` automaticamente
+4. Execute o USBRelay Host **como Administrador** (manifest UAC incluso)
 
 ### Na VM Convidada
 
-1. Instale o [usbipd-win](https://github.com/dorssel/usbipd-win/releases) >= 4.0
+1. Windows 10 x64 (versão 1903+) ou Windows 11 ARM64
 2. Garanta que a VM alcance o host pelo IP da rede local (LAN)
+3. O instalador do Client instala o `usbip-win2` (driver VHCI + CLI) automaticamente
+4. **Porta 3240** (protocolo USB/IP) deve estar liberada no firewall do Host
+
+```powershell
+# No HOST, como Administrador:
+netsh advfirewall firewall add rule name="USBIP Server" dir=in action=allow protocol=tcp localport=3240
+```
 
 ## Instalação
+
+### Instaladores NSIS (Recomendado)
+
+Os instaladores estão na pasta `dist/`:
+
+| Instalador | Tamanho | Conteúdo |
+|---|---|---|
+| `USBRelayHost_Setup.exe` | ~38 MB | Host + usbipd-win (MSI) |
+| `USBRelayClient_Setup.exe` | ~65 MB | Client + usbip-win2 (driver VHCI, sem GUI) |
+
+- O instalador do **Host** solicita privilégios de Administrador (UAC) e instala o `usbipd-win` silenciosamente
+- O instalador do **Client** instala o driver VHCI do `usbip-win2` sem a GUI nativa (apenas drivers + CLI)
+- Se o driver VHCI já estiver instalado, a instalação do USBip é pulada automaticamente
 
 ### A Partir do Código-Fonte
 
 ```bash
-# Clone ou baixe o projeto
 cd usbrelay
 
-# Instale as dependências do Host
-pip install -r requirements-host.txt
+# Dependências compartilhadas
+pip install pydantic
 
-# Instale as dependências do Client
-pip install -r requirements-client.txt
+# Dependências do Host
+pip install fastapi uvicorn PyQt6 pyinstaller
 
-# Execute o Host
-python -m host.main
+# Dependências do Client
+pip install httpx PyQt6 pyinstaller
 
-# Execute o Client
-python -m client.main
+# Executar o Host
+python host/main.py
+
+# Executar o Client
+python client/main.py
 ```
 
-### Gerar .exe Autônomo
+### Gerar Instaladores
 
 ```bash
-# Instale o PyInstaller
-pip install pyinstaller
+# Compilar Host (onedir + UAC admin)
+python -m PyInstaller --noconsole --onedir --uac-admin --name USBRelayHost \
+  --add-data "host/assets/icon.ico;assets" \
+  --add-data "usbipd-install/usbipd-win_5.3.0_x64.msi;usbipd-install" \
+  --hidden-import fastapi --hidden-import uvicorn --hidden-import pydantic --hidden-import PyQt6 \
+  host/main.py
 
-# Compilar o Host
-pyinstaller build/build_host.spec
+# Compilar Client (onedir)
+python -m PyInstaller --noconsole --onedir --name USBRelayClient \
+  --add-data "client/assets/icon.ico;assets" \
+  --add-data "usbipd-install/USBip;usbipd-install/USBip" \
+  --hidden-import httpx --hidden-import pydantic --hidden-import PyQt6 \
+  client/main.py
 
-# Compilar o Client
-pyinstaller build/build_client.spec
-
-# Arquivos de saída
-# dist/USBRelayHost.exe  (~30-50 MB autônomo)
-# dist/USBRelayClient.exe (~30-50 MB autônomo)
+# Gerar instaladores NSIS
+makensis build/installer_host.nsi
+makensis build/installer_client.nsi
 ```
 
 ## Guia Rápido
 
-### 1. Configurar o Host
+### 1. Instalar e Configurar o Host
 
-- Execute `USBRelayHost.exe` como Administrador
+- Execute `USBRelayHost_Setup.exe` como Administrador
 - O Host detecta todos os dispositivos USB e inicia a API REST na porta `5757`
 - Anote o endereço IP da máquina host (ex.: `192.168.1.10`)
 
@@ -74,11 +102,11 @@ pyinstaller build/build_client.spec
 
 - Na GUI do Host, localize seu dispositivo USB na tabela
 - Clique com o botão direito e selecione **Share**, ou clique em **Share Selected**
-- O status do dispositivo muda para verde "Shared"
+- O status do dispositivo muda para "Shared"
 
-### 3. Configurar o Client (dentro da VM)
+### 3. Instalar e Configurar o Client (dentro da VM)
 
-- Execute `USBRelayClient.exe` na VM convidada
+- Execute `USBRelayClient_Setup.exe` na VM convidada
 - Vá até a aba **Settings**
 - Informe o IP e a porta do Host (padrão: `5757`)
 - Clique em **Apply**
@@ -91,7 +119,7 @@ pyinstaller build/build_client.spec
 
 ## Modo de Compartilhamento Permanente
 
-A principal funcionalidade do USBRelay é a reconexão automática entre reinicializações — sem etapas manuais após a configuração inicial.
+A principal funcionalidade do USB Relay IP é a reconexão automática entre reinicializações — sem etapas manuais após a configuração inicial.
 
 ### No Host
 
@@ -122,19 +150,21 @@ Com ambos ativados, os dispositivos USB reconectam automaticamente após a reini
 ## Arquitetura
 
 ```
-Hyper-V Host                         Hyper-V Guest VM
-┌────────────────────┐               ┌────────────────────┐
-│ Dispositivo USB    │               │ USBRelay Client    │
-│        │           │               │        │           │
-│        ▼           │  HTTP REST    │        ▼           │
-│   usbipd-win       │◄─────────────►│   usbipd (client)  │
-│        │           │  Porta 5757   │                    │
-│        ▼           │               │                    │
-│ USBRelay Host      │               │                    │
-│  ├─ API FastAPI    │               │                    │
-│  ├─ Config Manager │               │                    │
-│  └─ GUI PyQt6      │               │                    │
-└────────────────────┘               └────────────────────┘
+Hyper-V Host                              Hyper-V Guest VM
+┌──────────────────────────┐               ┌──────────────────────────┐
+│ Dispositivo USB          │               │ USBRelay Client          │
+│        │                 │               │        │                 │
+│        ▼                 │  USB/IP       │        ▼                 │
+│   usbipd-win             │◄─────────────►│   usbip-win2 (VHCI)     │
+│   (bind/share)           │  Porta 3240   │   (attach/detach)        │
+│        │                 │               │        │                 │
+│        ▼                 │  HTTP REST    │        ▼                 │
+│ USBRelay Host            │◄─────────────►│ USBRelay Client          │
+│  ├─ API FastAPI :5757    │               │  ├─ API httpx            │
+│  ├─ Device Monitor       │               │  ├─ Device Poller        │
+│  ├─ Config Manager       │               │  ├─ Auto-Attach Worker   │
+│  └─ GUI PyQt6            │               │  └─ GUI PyQt6            │
+└──────────────────────────┘               └──────────────────────────┘
 ```
 
 ## Endpoints da API
@@ -155,10 +185,12 @@ Autenticação: Chave de API opcional via cabeçalho `X-API-Key`.
 
 | Problema | Solução |
 |---|---|
-| "usbipd-win not found" | Instale o usbipd-win >= 4.0 da página de releases do GitHub |
+| "usbipd-win not found" | Execute o instalador do Host (instala o usbipd-win automaticamente) |
 | "Access denied" ao fazer bind | Execute o USBRelay Host como Administrador |
-| Client mostra "Offline" | Verifique IP do Host, porta e conectividade de rede |
+| Client mostra "Offline" | Verifique IP do Host, porta `5757` e conectividade de rede |
 | Dispositivo não aparece na VM | Certifique-se de que o dispositivo está no estado "Shared" no Host |
+| "VHCI device not found" | Execute o instalador do Client (instala o driver VHCI do usbip-win2) |
+| "Connection refused" porta 3240 | Libere a porta 3240 no firewall do Host (veja Pré-requisitos) |
 | Auto-attach não funciona | Verifique a lista de dispositivos permanentes em Settings; confirme que o host está acessível |
 | Porta já em uso | O USBRelay tenta incrementos (+1): 5758, 5759... |
 | Configuração corrompida | Backup salvo como `.bak`; padrões restaurados automaticamente |
@@ -167,14 +199,16 @@ Autenticação: Chave de API opcional via cabeçalho `X-API-Key`.
 
 - Log do Host: `%APPDATA%\USBRelay\usbrelay_host.log`
 - Log do Client: `%APPDATA%\USBRelay\usbrelay_client.log`
+- Crash log do Client: `%APPDATA%\USBRelay\usbrelay_client_crash.log`
 - Máximo de 5 MB por arquivo, 3 backups rotativos (15 MB total)
 
-## Segurança
+## Tecnologias
 
-- Autenticação por chave de API (opcional, texto plano)
-- Projetado para ambientes LAN confiáveis
-- Sem TLS na v1.0 (melhoria futura)
-- Host requer privilégios de Administrador
+- **Python 3.14** + **PyQt6** (GUI) + **FastAPI** (API REST) + **httpx** (HTTP client)
+- **usbipd-win** (host) — compartilhamento USB via protocolo USB/IP
+- **usbip-win2** (client) — driver VHCI certificado WHLK para Windows
+- **NSIS** — instaladores Windows
+- **PyInstaller** — empacotamento em executável (modo onedir)
 
 ## Licença
 

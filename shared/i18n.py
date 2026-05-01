@@ -172,8 +172,9 @@ STRINGS = {
         "setup.no_ip_info": "Please enter the IP address of the USBRelay Host machine.\nOpen Settings from the main window to configure.",
 
         "install.title": "usbipd-win Required",
-        "install.text": "usbipd-win was not found on this machine.\n\nWould you like to download and install it automatically?",
-        "install.downloading": "Downloading usbipd-win...",
+        "install.text": "usbipd-win was not found on this machine.\n\nWould you like to install it now?",
+        "install.client_text": "usbip-win2 (USB/IP client) was not found.\n\nIt is required to attach USB devices remotely.\nWould you like to install it now?",
+        "install.installing": "Installing usbipd-win...",
         "install.error_title": "Installation Failed",
         "install.error_text": "Failed to install usbipd-win.",
         "install.success_title": "Installation Complete",
@@ -300,12 +301,13 @@ STRINGS = {
         "setup.no_ip_info": "Informe o endereço IP da máquina USBRelay Host.\nAbra as Configurações na janela principal para configurar.",
 
         "install.title": "usbipd-win Necessário",
-        "install.text": "usbipd-win não foi encontrado nesta máquina.\n\nDeseja baixar e instalar automaticamente?",
-        "install.downloading": "Baixando usbipd-win...",
+        "install.text": "usbipd-win não foi encontrado.\n\nDeseja instalá-lo agora?",
+        "install.client_text": "usbip-win2 (cliente USB/IP) não foi encontrado.\n\nEle é necessário para conectar dispositivos USB remotamente.\n\nDeseja instalá-lo agora?",
+        "install.installing": "Instalando usbipd-win...",
         "install.error_title": "Falha na Instalação",
         "install.error_text": "Falha ao instalar o usbipd-win.",
         "install.success_title": "Instalação Concluída",
-        "install.success_text": "usbipd-win foi instalado.\nO USBRelay será iniciado agora.",
+        "install.success_text": "usbipd-win foi instalado.\nO USB Relay IP será iniciado agora.",
     },
 }
 

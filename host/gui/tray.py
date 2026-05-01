@@ -1,16 +1,43 @@
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
 from shared.i18n import t
 
 
+def _make_icon(color: str) -> QIcon:
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(Qt.GlobalColor.white)
+    painter.drawEllipse(2, 2, 28, 28)
+    painter.setBrush(Qt.GlobalColor.gray if color == "gray" else Qt.GlobalColor.darkGreen)
+    painter.drawEllipse(5, 5, 22, 22)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _load_icon(path: str, fallback_color: str) -> QIcon:
+    if not path:
+        return _make_icon(fallback_color)
+    try:
+        icon = QIcon(path)
+        if icon.availableSizes():
+            return icon
+    except Exception:
+        pass
+    return _make_icon(fallback_color)
+
+
 class TrayIcon(QSystemTrayIcon):
     def __init__(self, icon_path: str, connected_icon_path: str, parent=None):
         super().__init__(parent)
-        self._default_icon = QIcon(icon_path)
-        self._connected_icon = QIcon(connected_icon_path) if connected_icon_path else self._default_icon
+        self._default_icon = _load_icon(icon_path, "gray") if icon_path else _make_icon("gray")
+        self._connected_icon = _load_icon(connected_icon_path, "green") if connected_icon_path else _make_icon("green")
+
         self.setIcon(self._default_icon)
-        self.setToolTip("USBRelay Host")
+        self.setToolTip("USB Relay IP Host")
 
         self._menu = QMenu()
         self._setup_menu()

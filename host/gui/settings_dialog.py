@@ -1,7 +1,7 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLineEdit, QPushButton, QSpinBox, QVBoxLayout,
+    QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from host.core import autostart_manager, config_manager
@@ -9,7 +9,7 @@ from shared.constants import DEFAULT_API_PORT, POLL_INTERVAL_DEFAULT
 from shared.i18n import t
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(QWidget):
     settings_applied = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -70,15 +70,14 @@ class SettingsDialog(QDialog):
         startup_group.setLayout(startup_layout)
         layout.addWidget(startup_group)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Apply |
-            QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Apply).setText(t("btn.apply"))
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(t("btn.cancel"))
-        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self._apply)
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).clicked.connect(self.reject)
-        layout.addWidget(buttons)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        apply_btn = QPushButton(t("btn.apply"))
+        apply_btn.clicked.connect(self._apply)
+        btn_layout.addWidget(apply_btn)
+
+        layout.addLayout(btn_layout)
 
     def _toggle_key_visibility(self, checked: bool):
         if checked:
@@ -102,4 +101,3 @@ class SettingsDialog(QDialog):
         config_manager.update_autostart(self._autostart_check.isChecked())
 
         self.settings_applied.emit()
-        self.accept()

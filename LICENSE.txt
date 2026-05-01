@@ -1,0 +1,3 @@
+USB Relay IP - License
+Copyright (c) 2026 OhMyTech Solucoes Digitais
+All rights reserved.

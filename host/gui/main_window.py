@@ -103,9 +103,11 @@ class HostMainWindow(QMainWindow):
 
         result = usbipd_wrapper.bind_device(busid)
         if result.success:
+            logger.info(f"Device {busid} bound successfully")
             self._tray.show_notification("USBRelay", t("notify.shared", busid=busid))
         else:
-            self._tray.show_notification("USBRelay", t("notify.share_failed", busid=busid, msg=result.message))
+            logger.error(f"Bind failed for {busid}: stdout={result.stdout!r} stderr={result.stderr!r}")
+            self._tray.show_notification("USBRelay", t("notify.share_failed", busid=busid, msg=result.stderr or result.message))
         self._refresh_devices()
 
     def _unshare_device(self, busid: str):

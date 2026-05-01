@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 import re
+import shutil
 import subprocess
 import sys
 from typing import Optional
@@ -11,10 +13,35 @@ from shared.models import CommandResult, UsbDevice
 logger = logging.getLogger(__name__)
 
 
+def _find_usbipd() -> Optional[str]:
+    found = shutil.which(USBIPD_EXE)
+    if found:
+        return found
+
+    paths = [
+        os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "usbipd-win", f"{USBIPD_EXE}.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "usbipd-win", f"{USBIPD_EXE}.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "usbipd-win", f"{USBIPD_EXE}.exe"),
+        os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", f"{USBIPD_EXE}.exe"),
+    ]
+
+    for p in paths:
+        if os.path.exists(p):
+            return p
+
+    return None
+
+
 def _run_command(args: list[str], timeout: int = 15) -> tuple[int, str, str]:
+    exe_path = _find_usbipd()
+    if not exe_path:
+        return -1, "", f"Executable not found: {USBIPD_EXE}"
+
+    full_args = [exe_path] + args[1:] if args[0] == USBIPD_EXE else args
+
     try:
         proc = subprocess.run(
-            args,
+            full_args,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -22,7 +49,7 @@ def _run_command(args: list[str], timeout: int = 15) -> tuple[int, str, str]:
         )
         return proc.returncode, proc.stdout, proc.stderr
     except FileNotFoundError:
-        return -1, "", f"Executable not found: {args[0]}"
+        return -1, "", f"Executable not found: {exe_path}"
     except subprocess.TimeoutExpired:
         return -2, "", "Command timed out"
     except Exception as exc:
@@ -45,7 +72,10 @@ def get_version() -> tuple[int, int]:
 
 
 def is_available() -> bool:
-    """Check if usbipd is available in PATH."""
+    """Check if usbipd is available."""
+    exe = _find_usbipd()
+    if not exe:
+        return False
     major, minor = get_version()
     if major == 0 and minor == 0:
         return False
