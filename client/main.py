@@ -185,6 +185,13 @@ def main():
 
     sys.excepthook = _excepthook
 
+    # --headless: boot task running as SYSTEM in Session 0 (no desktop).
+    # Must bypass QApplication entirely — Qt cannot initialise without a desktop.
+    if "--headless" in sys.argv:
+        logger.info("Headless mode: boot-time pre-login attach loop")
+        run_headless()
+        return
+
     try:
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)

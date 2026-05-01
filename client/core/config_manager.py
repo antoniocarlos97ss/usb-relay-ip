@@ -21,6 +21,21 @@ def _config_path() -> str:
     return os.path.join(_config_dir(), CLIENT_CONFIG_FILE)
 
 
+def _shared_config_dir() -> str:
+    """%ProgramData%\\USBRelay — readable/writable by SYSTEM and all local users."""
+    programdata = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    path = os.path.join(programdata, CONFIG_DIR_NAME)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+
+def _shared_config_path() -> str:
+    return os.path.join(_shared_config_dir(), CLIENT_CONFIG_FILE)
+
+
 def _default_config() -> ClientConfig:
     return ClientConfig()
 
@@ -35,7 +50,13 @@ def _backup_corrupted(filepath: str) -> None:
 
 
 def load_config() -> ClientConfig:
-    path = _config_path()
+    # Boot task runs as SYSTEM: APPDATA points to the system profile, not the
+    # user's profile.  Use the ProgramData mirror written by the GUI instead.
+    if "--headless" in sys.argv:
+        path = _shared_config_path()
+    else:
+        path = _config_path()
+
     if not os.path.exists(path):
         config = _default_config()
         save_config(config)
@@ -64,6 +85,17 @@ def save_config(config: ClientConfig) -> None:
     except Exception as exc:
         logger.error(f"Failed to save config to {path}: {exc}")
         raise
+
+    # Mirror to ProgramData so the boot task (SYSTEM) can read it pre-login.
+    try:
+        shared_path = _shared_config_path()
+        shared_tmp = shared_path + ".tmp"
+        with open(shared_tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(shared_tmp, shared_path)
+        logger.debug(f"Config mirrored to shared path: {shared_path}")
+    except Exception as exc:
+        logger.debug(f"Could not mirror config to ProgramData (non-fatal): {exc}")
 
 
 def add_permanent_device(vid: str, pid: str, description: str = "") -> None:

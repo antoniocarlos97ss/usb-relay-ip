@@ -59,6 +59,7 @@ _BOOT_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
   <Actions Context="Author">
     <Exec>
       <Command>{exe_path}</Command>
+      <Arguments>--headless</Arguments>
     </Exec>
   </Actions>
 </Task>"""
