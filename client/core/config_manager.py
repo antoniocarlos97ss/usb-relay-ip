@@ -134,14 +134,21 @@ def update_poll_interval(seconds: int) -> None:
     save_config(config)
 
 
-def update_autostart(enabled: bool) -> None:
+def update_autostart(enabled: bool) -> bool:
     config = load_config()
     config.autostart_with_windows = enabled
     save_config(config)
 
     if enabled:
         from .autostart_manager import register_startup
-        register_startup(sys.executable)
+        exe = sys.executable
+        if getattr(sys, "frozen", False):
+            exe = sys.executable
+        else:
+            import os
+            exe = os.path.join(os.path.dirname(__file__), "..", "main.py")
+            exe = f'"{sys.executable}" "{os.path.abspath(exe)}"'
+        return register_startup(exe)
     else:
         from .autostart_manager import unregister_startup
-        unregister_startup()
+        return unregister_startup()

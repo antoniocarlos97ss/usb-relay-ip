@@ -2,11 +2,12 @@ import faulthandler
 import logging
 import os
 import sys
+import time
 import traceback
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
+from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QSystemTrayIcon
 
 from shared.constants import APP_NAME
 from shared.i18n import t
@@ -107,6 +108,58 @@ def _ensure_usbip(parent=None) -> bool:
     return usbip_wrapper.is_available()
 
 
+def run_headless():
+    logger = logging.getLogger(__name__)
+    from client.api.host_client import HostApiClient
+    from client.core import config_manager, usbip_wrapper
+
+    config = config_manager.load_config()
+    if not config.host_ip or not config.permanent_devices:
+        logger.info("No host IP or permanent devices configured, nothing to do in headless mode")
+        return
+
+    api_client = HostApiClient(
+        host_ip=config.host_ip,
+        host_port=config.host_port,
+        api_key=config.api_key,
+    )
+
+    max_attempts = 20
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            time.sleep(10)
+
+        devices = api_client.get_devices()
+        if not api_client.is_connected():
+            logger.warning(f"Host not reachable (attempt {attempt+1}/{max_attempts})")
+            continue
+
+        all_done = True
+        for perm_device in config.permanent_devices:
+            matched = None
+            for d in devices:
+                if d.vid == perm_device.vid and d.pid == perm_device.pid:
+                    matched = d
+                    break
+
+            if matched and matched.state == "Shared":
+                logger.info(f"Attaching {matched.busid}")
+                result = usbip_wrapper.attach_device(config.host_ip, matched.busid)
+                if result.success:
+                    logger.info(f"Attached {matched.busid}")
+                else:
+                    logger.error(f"Attach failed {matched.busid}: {result.message}")
+                    all_done = False
+            elif not (matched and matched.state == "Attached"):
+                all_done = False
+
+        if all_done:
+            logger.info("All permanent devices attached, exiting")
+            return
+
+    logger.warning("Timeout waiting for permanent devices")
+
+
 def main():
     setup_logging()
     logger = logging.getLogger(__name__)
@@ -130,6 +183,11 @@ def main():
         app.setStyle("Fusion")
     except Exception as exc:
         _write_crash(f"QApplication init failed: {exc}")
+        return
+
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        logger.info("No system tray available — running in headless mode")
+        run_headless()
         return
 
     if not _ensure_usbip():

@@ -1,7 +1,7 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from client.core import config_manager
@@ -65,7 +65,7 @@ class ClientSettingsDialog(QWidget):
         startup_group = QGroupBox(t("settings.startup"))
         startup_layout = QVBoxLayout()
 
-        self._autostart_check = QCheckBox(t("settings.autostart_logon"))
+        self._autostart_check = QCheckBox(t("settings.autostart_boot"))
         startup_layout.addWidget(self._autostart_check)
 
         startup_group.setLayout(startup_layout)
@@ -101,6 +101,15 @@ class ClientSettingsDialog(QWidget):
         config_manager.update_host_port(self._port_spin.value())
         config_manager.update_api_key(self._api_key_input.text())
         config_manager.update_poll_interval(self._poll_spin.value())
-        config_manager.update_autostart(self._autostart_check.isChecked())
+
+        autostart_ok = config_manager.update_autostart(self._autostart_check.isChecked())
+
+        if autostart_ok:
+            if self._autostart_check.isChecked():
+                QMessageBox.information(self, t("settings.autostart"), t("settings.autostart_enabled"))
+            else:
+                QMessageBox.information(self, t("settings.autostart"), t("settings.autostart_disabled"))
+        else:
+            QMessageBox.warning(self, t("settings.autostart"), t("settings.autostart_failed"))
 
         self.settings_applied.emit()

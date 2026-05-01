@@ -28,14 +28,15 @@ def register_startup(exe_path: str) -> bool:
         "/Create",
         "/TN", TASK_NAME,
         "/TR", f'"{exe_path}"',
-        "/SC", "ONLOGON",
+        "/SC", "BOOT",
+        "/RU", "SYSTEM",
         "/RL", "HIGHEST",
         "/F",
     ])
     if success:
-        logger.info("USBRelay Client startup task registered")
+        logger.info(f"USBRelay Client startup task created: {TASK_NAME}")
     else:
-        logger.error(f"Failed to register startup task: {stderr}")
+        logger.error(f"Failed to create startup task: {stderr}")
     return success
 
 
@@ -46,9 +47,9 @@ def unregister_startup() -> bool:
         "/F",
     ])
     if success:
-        logger.info("USBRelay Client startup task unregistered")
+        logger.info(f"USBRelay Client startup task deleted: {TASK_NAME}")
     else:
-        logger.warning(f"Failed to unregister startup task: {stderr}")
+        logger.warning(f"Failed to delete startup task: {stderr}")
     return success
 
 
