@@ -244,7 +244,10 @@ def main():
     tray._quit_action.triggered.connect(_quit)
 
     tray.show()
-    window.show()
+    if "--minimized" in sys.argv:
+        window.hide()
+    else:
+        window.show()
 
     logger.info("USBRelay Client started")
 

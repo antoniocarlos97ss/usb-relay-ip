@@ -68,10 +68,11 @@ def register_boot_task(exe_path: str) -> bool:
     try:
         clean_path = exe_path.strip('"')
         xml = _BOOT_TASK_XML.replace("{exe_path}", clean_path)
-        fd, tmp_path = tempfile.mkstemp(suffix=".xml", text=True)
+
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
         try:
-            os.write(fd, xml.encode("utf-16-le"))
-            os.close(fd)
+            with open(tmp_fd, "wb") as f:
+                f.write(xml.encode("utf-16-le"))
             success, stdout, stderr = _run_schtasks([
                 "/Create",
                 "/TN", BOOT_TASK_NAME,
@@ -111,9 +112,10 @@ def unregister_boot_task() -> bool:
 def register_logon_run(exe_path: str) -> bool:
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, exe_path)
+        run_value = f'"{exe_path.strip(chr(34))}" --minimized'
+        winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, run_value)
         winreg.CloseKey(key)
-        logger.info(f"Logon Run key added: {RUN_VALUE}={exe_path}")
+        logger.info(f"Logon Run key added: {RUN_VALUE}={run_value}")
         return True
     except Exception as exc:
         logger.error(f"Failed to set logon Run key: {exc}")
