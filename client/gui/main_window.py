@@ -37,6 +37,7 @@ class ClientMainWindow(QMainWindow):
     def __init__(self, tray_icon: ClientTrayIcon):
         super().__init__()
         self._tray = tray_icon
+        self._port_map: dict[str, int] = {}
 
         config = config_manager.load_config()
         self._api_client = HostApiClient(
@@ -156,8 +157,10 @@ class ClientMainWindow(QMainWindow):
         except ValueError:
             pass
 
-    def _on_attach_finished(self, success: bool, message: str, busid: str):
+    def _on_attach_finished(self, success: bool, message: str, busid: str, port: int = 0):
         if success:
+            if port:
+                self._port_map[busid] = port
             logger.info(f"Device {busid} attached successfully.")
             self._tray.show_notification("USBRelay", t("notify.attached", busid=busid))
         else:
@@ -167,7 +170,8 @@ class ClientMainWindow(QMainWindow):
 
     def _detach_device(self, busid: str):
         logger.info(f"Detaching device {busid}")
-        worker = usbip_worker.DetachWorker(busid)
+        port = self._port_map.get(busid)
+        worker = usbip_worker.DetachWorker(busid, port=port)
         worker.finished.connect(self._on_detach_finished)
         worker.finished.connect(worker.deleteLater)
         worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
@@ -270,7 +274,7 @@ class ClientMainWindow(QMainWindow):
             busid = matched.busid
             worker = usbip_worker.AttachWorker(host_ip, busid)
             worker.finished.connect(
-                lambda success, msg, b=busid, d=desc: self._on_auto_attach_finished(success, b, d),
+                lambda success, msg, b=busid, port=0, d=desc: self._on_auto_attach_finished(success, b, d, port),
             )
             worker.finished.connect(worker.deleteLater)
             worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
@@ -284,8 +288,10 @@ class ClientMainWindow(QMainWindow):
 
         QTimer.singleShot(delay_ms, lambda: self._retry_attach(vid, pid, host_ip, attempts + 1))
 
-    def _on_auto_attach_finished(self, success: bool, busid: str, description: str):
+    def _on_auto_attach_finished(self, success: bool, busid: str, description: str, port: int = 0):
         if success:
+            if port:
+                self._port_map[busid] = port
             self._tray.show_notification(
                 "USBRelay", t("notify.auto_attached", busid=busid, desc=description),
             )

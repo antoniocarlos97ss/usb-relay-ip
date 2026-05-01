@@ -28,7 +28,7 @@ def register_startup(exe_path: str) -> bool:
         "/Create",
         "/TN", TASK_NAME,
         "/TR", f'"{exe_path}"',
-        "/SC", "BOOT",
+        "/SC", "ONSTART",
         "/RU", "SYSTEM",
         "/RL", "HIGHEST",
         "/F",
