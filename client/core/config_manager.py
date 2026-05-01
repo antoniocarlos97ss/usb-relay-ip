@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 
 from shared.constants import CLIENT_CONFIG_FILE, CONFIG_DIR_NAME
 from shared.models import ClientConfig, ClientPermanentDevice
@@ -137,3 +138,10 @@ def update_autostart(enabled: bool) -> None:
     config = load_config()
     config.autostart_with_windows = enabled
     save_config(config)
+
+    if enabled:
+        from .autostart_manager import register_startup
+        register_startup(sys.executable)
+    else:
+        from .autostart_manager import unregister_startup
+        unregister_startup()
