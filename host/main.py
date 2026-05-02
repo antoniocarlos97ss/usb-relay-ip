@@ -1,6 +1,10 @@
 import logging
 import os
+import socket
 import sys
+import threading
+import time
+import traceback
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
@@ -84,22 +88,98 @@ def _ensure_usbipd(parent=None) -> bool:
     return usbipd_wrapper.is_available()
 
 
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def run_headless_host():
+    """Boot-time headless mode: auto-bind permanent devices + start API server.
+
+    Runs as SYSTEM in Session 0 (no desktop). Must not touch Qt at all.
+    Keeps the process alive so the daemon API server thread keeps running.
+    """
+    logger = logging.getLogger(__name__)
+    from host.core import config_manager, usbipd_wrapper
+    from host.api.server import start_server
+
+    config = config_manager.load_config()
+
+    # Start FastAPI server first so Client VMs can connect while binding
+    start_server(host="0.0.0.0", port=config.api_port)
+    logger.info(f"[headless] API server started on port {config.api_port}")
+
+    # Auto-bind permanent devices (retry loop while usbipd settles after boot)
+    if config.permanent_devices:
+        max_attempts = 20
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                time.sleep(5)
+            try:
+                devices = usbipd_wrapper.list_devices()
+                pending = []
+                for perm in config.permanent_devices:
+                    matched = next(
+                        (d for d in devices
+                         if d.vid.lower() == perm.vid.lower()
+                         and d.pid.lower() == perm.pid.lower()),
+                        None,
+                    )
+                    if matched:
+                        if matched.state not in ("Shared", "Attached"):
+                            result = usbipd_wrapper.bind_device(matched.busid)
+                            if result.success:
+                                logger.info(f"[headless] Auto-bound {matched.busid}")
+                            else:
+                                logger.warning(f"[headless] Bind failed {matched.busid}: {result.stderr}")
+                                pending.append(perm)
+                        # else already shared/attached — OK
+                    else:
+                        pending.append(perm)
+
+                if not pending:
+                    logger.info("[headless] All permanent devices bound")
+                    break
+            except Exception as exc:
+                logger.warning(f"[headless] Auto-bind attempt {attempt + 1} failed: {exc}")
+    else:
+        logger.info("[headless] No permanent devices configured")
+
+    # Keep the process alive — API server thread is a daemon thread
+    logger.info("[headless] Entering wait loop (API server running)")
+    threading.Event().wait()
+
+
 def main():
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setApplicationVersion("1.0.0")
-    app.setStyle("Fusion")
-
     def _excepthook(exc_type, exc_value, exc_tb):
-        import traceback
         tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-        logging.getLogger(__name__).critical(f"Unhandled exception:\n{tb}")
+        try:
+            logger.critical(f"Unhandled exception:\n{tb}")
+        except Exception:
+            pass
         sys.__excepthook__(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _excepthook
+
+    # --headless: boot task running as SYSTEM in Session 0 (no desktop).
+    # Must bypass QApplication entirely.
+    if "--headless" in sys.argv:
+        logger.info("Headless mode: boot-time auto-bind + API server")
+        run_headless_host()
+        return
+
+    try:
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+        app.setApplicationName(APP_NAME)
+        app.setApplicationVersion("1.0.0")
+        app.setStyle("Fusion")
+    except Exception as exc:
+        logger.critical(f"QApplication init failed: {exc}")
+        return
 
     if not _ensure_usbipd():
         sys.exit(1)
@@ -126,19 +206,42 @@ def main():
     from host.core import config_manager as host_config
 
     config = host_config.load_config()
-    start_server(host="0.0.0.0", port=config.api_port)
+
+    # If the headless boot task is already running the API server, skip
+    # starting a second instance (would fail to bind the port anyway).
+    if _port_in_use(config.api_port):
+        logger.info(
+            f"API port {config.api_port} already in use "
+            "(headless boot task running) — skipping server start"
+        )
+    else:
+        start_server(host="0.0.0.0", port=config.api_port)
+
     window.set_api_status(True, config.api_port)
 
+    def _quit():
+        logger.info("Quitting Host application")
+        window.quit_app()
+        tray.hide()
+        app.quit()
+
+    tray._quit_action.triggered.disconnect()
+    tray._quit_action.triggered.connect(_quit)
+
+    # commitDataRequest fires on Windows shutdown/restart/logoff.
+    # Signal emits ONE argument (QSessionManager).
+    app.commitDataRequest.connect(lambda _manager: _quit())
+
     tray.show()
-    window.show()
+    if "--minimized" in sys.argv:
+        window.hide()
+    else:
+        window.show()
 
     logger.info("USBRelay Host started")
 
     ret = app.exec()
-
-    window.quit_app()
-    if hasattr(tray, "hide"):
-        tray.hide()
+    logger.info(f"Event loop exited with code {ret}")
     sys.exit(ret)
 
 

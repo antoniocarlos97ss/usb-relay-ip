@@ -1,10 +1,10 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from host.core import autostart_manager, config_manager
+from host.core import config_manager
 from shared.constants import DEFAULT_API_PORT, POLL_INTERVAL_DEFAULT
 from shared.i18n import t
 
@@ -62,9 +62,6 @@ class SettingsDialog(QWidget):
         startup_layout = QVBoxLayout()
 
         self._autostart_check = QCheckBox(t("settings.autostart_service"))
-        if not autostart_manager.is_nssm_available():
-            self._autostart_check.setEnabled(False)
-            self._autostart_check.setToolTip(t("settings.nssm_not_found"))
         startup_layout.addWidget(self._autostart_check)
 
         startup_group.setLayout(startup_layout)
@@ -98,6 +95,12 @@ class SettingsDialog(QWidget):
         config_manager.update_api_port(self._port_spin.value())
         config_manager.update_api_key(self._api_key_input.text())
         config_manager.update_poll_interval(self._poll_spin.value())
-        config_manager.update_autostart(self._autostart_check.isChecked())
+        logon_ok, boot_ok = config_manager.update_autostart(self._autostart_check.isChecked())
+
+        if self._autostart_check.isChecked():
+            lines = []
+            lines.append(f"{'✔' if logon_ok else '✘'} {t('autostart_logon_ok') if logon_ok else t('autostart_logon_fail')}")
+            lines.append(f"{'✔' if boot_ok else '✘'} {t('autostart_boot_ok') if boot_ok else t('autostart_boot_needs_admin')}")
+            QMessageBox.information(self, t("settings.autostart_result_title"), "\n".join(lines))
 
         self.settings_applied.emit()

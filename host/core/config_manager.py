@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from typing import Optional
 
 from shared.constants import CONFIG_DIR_NAME, HOST_CONFIG_FILE
@@ -131,7 +132,19 @@ def update_poll_interval(seconds: int) -> None:
     save_config(config)
 
 
-def update_autostart(enabled: bool) -> None:
+def update_autostart(enabled: bool) -> tuple[bool, bool]:
     config = load_config()
     config.autostart_as_service = enabled
     save_config(config)
+
+    if enabled:
+        from .autostart_manager import register_startup
+        exe = sys.executable
+        if not getattr(sys, "frozen", False):
+            exe = os.path.join(os.path.dirname(__file__), "..", "main.py")
+            exe = f'"{sys.executable}" "{os.path.abspath(exe)}"'
+        return register_startup(exe)
+    else:
+        from .autostart_manager import unregister_startup
+        unregister_startup()
+        return True, True
