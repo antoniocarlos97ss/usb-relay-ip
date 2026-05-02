@@ -337,6 +337,38 @@ class ClientMainWindow(QMainWindow):
             time.sleep(0.3)
         self._port_map.clear()
 
+    def detach_all_async(self):
+        """Non-blocking detach: fires DetachWorker for every known port."""
+        if not self._port_map:
+            return
+        logger.info(f"Async detaching {len(self._port_map)} devices")
+        from client.core import usbip_worker as uw
+        uw.set_shutting_down()
+        ports = list(self._port_map.items())
+        self._port_map.clear()
+        for busid, port in ports:
+            worker = uw.DetachWorker(busid, port=port)
+            worker.finished.connect(
+                lambda success, msg, b=busid: logger.info(
+                    f"Shutdown detach {b}: {'OK' if success else 'FAIL: ' + msg}"
+                )
+            )
+            worker.start()
+            self._workers.append(worker)
+
+    def force_cleanup(self):
+        logger.info("Force cleanup: killing subprocesses and workers")
+        from client.core import usbip_wrapper
+        usbip_wrapper.kill_all_subprocesses()
+        for w in list(self._workers):
+            if w.isRunning():
+                try:
+                    w.terminate()
+                    w.wait(1000)
+                except Exception:
+                    pass
+        self._workers.clear()
+
     def quit_app(self):
         if hasattr(self, "_poller") and self._poller:
             self._poller.devices_fetched.disconnect()
@@ -349,6 +381,6 @@ class ClientMainWindow(QMainWindow):
         if self._shutting_down:
             return
         self._shutting_down = True
-        logger.info("Quitting app with detach")
-        self._detach_all_devices()
+        logger.info("Quitting app with async detach")
+        self.detach_all_async()
         self.quit_app()

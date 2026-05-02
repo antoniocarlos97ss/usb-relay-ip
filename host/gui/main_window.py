@@ -174,3 +174,8 @@ class HostMainWindow(QMainWindow):
         if self._monitor:
             self._monitor.stop()
         self._tray.hide()
+
+    def force_cleanup(self):
+        logger.info("Force cleanup: killing usbipd subprocesses")
+        from host.core import usbipd_wrapper
+        usbipd_wrapper.kill_all_subprocesses()

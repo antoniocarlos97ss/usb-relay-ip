@@ -1,6 +1,8 @@
+import atexit
 import logging
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -33,6 +35,22 @@ def setup_logging():
     )
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
+
+
+def _emergency_cleanup():
+    """Last-resort: kill all usbipd.exe processes on abnormal exit."""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "usbipd.exe"],
+            capture_output=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
+
+
+atexit.register(_emergency_cleanup)
 
 
 def _ensure_usbipd(parent=None) -> bool:
@@ -231,6 +249,10 @@ def main():
     # commitDataRequest fires on Windows shutdown/restart/logoff.
     # Signal emits ONE argument (QSessionManager).
     app.commitDataRequest.connect(lambda _manager: _quit())
+
+    # aboutToQuit fires after app.quit() is accepted by the event loop.
+    # Last chance to forcibly kill any usbipd subprocesses.
+    app.aboutToQuit.connect(window.force_cleanup)
 
     tray.show()
     if "--minimized" in sys.argv:

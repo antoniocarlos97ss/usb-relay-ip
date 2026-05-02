@@ -12,6 +12,37 @@ from shared.models import CommandResult, UsbDevice
 
 logger = logging.getLogger(__name__)
 
+_subprocesses: list[subprocess.Popen] = []
+
+
+def _register_proc(proc: subprocess.Popen):
+    _subprocesses.append(proc)
+
+
+def _unregister_proc(proc: subprocess.Popen):
+    try:
+        _subprocesses.remove(proc)
+    except ValueError:
+        pass
+
+
+def kill_all_subprocesses():
+    for proc in list(_subprocesses):
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    _subprocesses.clear()
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", f"{USBIPD_EXE}.exe"],
+            capture_output=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
+
 
 def _find_usbipd() -> Optional[str]:
     found = shutil.which(USBIPD_EXE)
@@ -40,18 +71,28 @@ def _run_command(args: list[str], timeout: int = 15) -> tuple[int, str, str]:
     full_args = [exe_path] + args[1:] if args[0] == USBIPD_EXE else args
 
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             full_args,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
-        return proc.returncode, proc.stdout, proc.stderr
+        _register_proc(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return proc.returncode, stdout, stderr
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                stdout, stderr = proc.communicate(timeout=2)
+            except Exception:
+                stdout, stderr = "", "Command timed out and kill failed"
+            return -2, stdout or "", stderr or "Command timed out"
+        finally:
+            _unregister_proc(proc)
     except FileNotFoundError:
         return -1, "", f"Executable not found: {exe_path}"
-    except subprocess.TimeoutExpired:
-        return -2, "", "Command timed out"
     except Exception as exc:
         return -3, "", str(exc)
 

@@ -8,6 +8,13 @@ from client.core import usbip_wrapper
 
 logger = logging.getLogger(__name__)
 
+_shutting_down = False
+
+
+def set_shutting_down():
+    global _shutting_down
+    _shutting_down = True
+
 
 class AttachWorker(QThread):
     finished = pyqtSignal(bool, str, str, int)
@@ -18,6 +25,9 @@ class AttachWorker(QThread):
         self._busid = busid
 
     def run(self):
+        if _shutting_down:
+            self.finished.emit(False, "Shutting down", self._busid, 0)
+            return
         try:
             result = usbip_wrapper.attach_device(self._host_ip, self._busid)
             port = 0
@@ -40,6 +50,9 @@ class DetachWorker(QThread):
         self._port = port
 
     def run(self):
+        if _shutting_down:
+            self.finished.emit(False, "Shutting down", self._busid)
+            return
         try:
             port = self._port
             if port is None:

@@ -1,6 +1,8 @@
+import atexit
 import faulthandler
 import logging
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -106,6 +108,22 @@ def _ensure_usbip(parent=None) -> bool:
 
     from client.core import usbip_wrapper
     return usbip_wrapper.is_available()
+
+
+def _emergency_cleanup():
+    """Last-resort: kill all usbip.exe processes on abnormal exit."""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "usbip.exe"],
+            capture_output=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
+
+
+atexit.register(_emergency_cleanup)
 
 
 def run_headless():
@@ -250,10 +268,15 @@ def main():
     tray._quit_action.triggered.connect(_quit)
 
     # commitDataRequest fires on Windows shutdown/restart/logoff.
-    # The signal emits exactly ONE argument (QSessionManager).
-    # We must detach all USB devices before quitting, otherwise the VHCI
-    # driver keeps an active connection and the system hangs on "Reiniciando".
+    # The handler must return quickly (<5s) to avoid the "app is preventing
+    # shutdown" dialog.  quit_app_with_detach() is now non-blocking (async
+    # DetachWorkers), so _quit() returns in milliseconds.
     app.commitDataRequest.connect(lambda _manager: _quit())
+
+    # aboutToQuit fires after app.quit() has been accepted by the event loop.
+    # This is our last chance to forcibly kill any remaining subprocesses that
+    # would hold VHCI handles open and block Windows shutdown.
+    app.aboutToQuit.connect(window.force_cleanup)
 
     tray.show()
     if "--minimized" in sys.argv:
