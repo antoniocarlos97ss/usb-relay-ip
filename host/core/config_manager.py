@@ -18,7 +18,19 @@ def _config_dir() -> str:
     return path
 
 
+def _programdata_dir() -> str:
+    pd = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    path = os.path.join(pd, CONFIG_DIR_NAME)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _config_path() -> str:
+    # When running as SYSTEM (headless boot task) %APPDATA% is the SYSTEM
+    # profile, not the user's.  Read from ProgramData instead so the headless
+    # process sees the same config as the GUI process.
+    if "--headless" in sys.argv:
+        return os.path.join(_programdata_dir(), HOST_CONFIG_FILE)
     return os.path.join(_config_dir(), HOST_CONFIG_FILE)
 
 
@@ -65,6 +77,18 @@ def save_config(config: HostConfig) -> None:
     except Exception as exc:
         logger.error(f"Failed to save config to {path}: {exc}")
         raise
+
+    # Mirror to ProgramData so the headless boot task (running as SYSTEM)
+    # reads the same config as the GUI process.
+    if not "--headless" in sys.argv:
+        try:
+            mirror_path = os.path.join(_programdata_dir(), HOST_CONFIG_FILE)
+            mirror_tmp = mirror_path + ".tmp"
+            with open(mirror_tmp, "w", encoding="utf-8") as f:
+                json.dump(config.model_dump(), f, indent=2, default=str)
+            os.replace(mirror_tmp, mirror_path)
+        except Exception as exc:
+            logger.warning(f"Failed to mirror config to ProgramData: {exc}")
 
 
 def add_permanent_device(vid: str, pid: str, description: str = "", busid_hint: str = "") -> None:

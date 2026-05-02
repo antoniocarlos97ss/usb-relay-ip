@@ -99,8 +99,8 @@ class SettingsDialog(QWidget):
 
         if self._autostart_check.isChecked():
             lines = []
-            lines.append(f"{'✔' if logon_ok else '✘'} {t('autostart_logon_ok') if logon_ok else t('autostart_logon_fail')}")
-            lines.append(f"{'✔' if boot_ok else '✘'} {t('autostart_boot_ok') if boot_ok else t('autostart_boot_needs_admin')}")
+            lines.append(f"{'✔' if logon_ok else '✘'} {t('settings.autostart_logon_ok') if logon_ok else t('settings.autostart_logon_fail')}")
+            lines.append(f"{'✔' if boot_ok else '✘'} {t('settings.autostart_boot_ok') if boot_ok else t('settings.autostart_boot_needs_admin')}")
             QMessageBox.information(self, t("settings.autostart_result_title"), "\n".join(lines))
 
         self.settings_applied.emit()
