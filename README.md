@@ -1,31 +1,29 @@
 # USB Relay IP
 
-Passagem USB do host Hyper-V para VMs convidadas — simplificada.
+Compartilhamento e conexão remota de USB no Windows — simplificado.
 
-O USB Relay IP é uma aplicação desktop Windows de dois componentes que encapsula o `usbipd-win` (host) e o `usbip-win2` (client) com uma GUI amigável e uma camada de comunicação REST, eliminando a necessidade de interação manual por linha de comando.
+O USB Relay IP é uma aplicação desktop Windows de dois componentes para compartilhar e reconectar dispositivos USB em cenários locais e remotos. Ele nasceu para o uso com Hyper-V, mas também pode atender outros contextos em que seja útil centralizar o acesso a dispositivos USB com uma GUI amigável e uma camada de comunicação REST.
 
 ## Componentes
 
 | Componente | Onde Instalar | Finalidade |
 |---|---|---|
-| **USBRelay Host** | Máquina física host Hyper-V | Detecta dispositivos USB, compartilha via `usbipd-win` e expõe API REST |
-| **USBRelay Client** | VM Windows convidada | Conecta dispositivos USB compartilhados via `usbip-win2` (driver VHCI) |
+| **USBRelay Host** | Máquina Windows com o dispositivo conectado | Detecta dispositivos USB, compartilha e expõe API REST |
+| **USBRelay Client** | Máquina Windows que vai consumir o dispositivo | Conecta dispositivos USB compartilhados remotamente |
 
 ## Pré-requisitos
 
-### No Host Hyper-V
+### No Host Windows
 
-1. Windows 10/11 com Hyper-V habilitado
-2. Habilite o switch virtual externo do Hyper-V (para comunicação VM ↔ host)
-3. O instalador do Host instala o `usbipd-win` automaticamente
-4. Execute o USBRelay Host **como Administrador** (manifest UAC incluso)
+1. Windows 10/11
+2. Se estiver usando Hyper-V, habilite o switch virtual externo para comunicação entre máquinas
+3. Execute o USBRelay Host **como Administrador** (manifest UAC incluso)
 
-### Na VM Convidada
+### Na Máquina Cliente
 
 1. Windows 10 x64 (versão 1903+) ou Windows 11 ARM64
-2. Garanta que a VM alcance o host pelo IP da rede local (LAN)
-3. O instalador do Client instala o `usbip-win2` (driver VHCI + CLI) automaticamente
-4. **Porta 3240** (protocolo USB/IP) deve estar liberada no firewall do Host
+2. Garanta conectividade de rede com a máquina Host
+3. **Porta 3240** deve estar liberada no firewall do Host
 
 ```powershell
 # No HOST, como Administrador:
@@ -40,12 +38,12 @@ Os instaladores estão na pasta `dist/`:
 
 | Instalador | Tamanho | Conteúdo |
 |---|---|---|
-| `USBRelayHost_Setup.exe` | ~38 MB | Host + usbipd-win (MSI) |
-| `USBRelayClient_Setup.exe` | ~65 MB | Client + usbip-win2 (driver VHCI, sem GUI) |
+| `USBRelayHost_Setup.exe` | ~38 MB | Host |
+| `USBRelayClient_Setup.exe` | ~65 MB | Client |
 
-- O instalador do **Host** solicita privilégios de Administrador (UAC) e instala o `usbipd-win` silenciosamente
-- O instalador do **Client** instala o driver VHCI do `usbip-win2` sem a GUI nativa (apenas drivers + CLI)
-- Se o driver VHCI já estiver instalado, a instalação do USBip é pulada automaticamente
+- O instalador do **Host** solicita privilégios de Administrador (UAC)
+- O instalador do **Client** prepara o ambiente necessário para conexão remota
+- Se algum pré-requisito já estiver presente, a instalação pula a etapa correspondente automaticamente
 
 ### A Partir do Código-Fonte
 
@@ -104,7 +102,7 @@ makensis build/installer_client.nsi
 - Clique com o botão direito e selecione **Share**, ou clique em **Share Selected**
 - O status do dispositivo muda para "Shared"
 
-### 3. Instalar e Configurar o Client (dentro da VM)
+### 3. Instalar e Configurar o Client
 
 - Execute `USBRelayClient_Setup.exe` na VM convidada
 - Vá até a aba **Settings**
@@ -120,6 +118,15 @@ makensis build/installer_client.nsi
 ## Modo de Compartilhamento Permanente
 
 A principal funcionalidade do USB Relay IP é a reconexão automática entre reinicializações — sem etapas manuais após a configuração inicial.
+
+## Casos de Uso
+
+Além do cenário Hyper-V, o USB Relay IP pode ser útil em situações como:
+
+- Compartilhamento de periféricos entre máquinas Windows em laboratório ou produção controlada
+- Acesso remoto a dispositivos USB que precisam permanecer conectados a um host específico
+- Ambientes de teste e automação que dependem de reconexão previsível
+- Cenários com máquinas físicas e clientes Windows na mesma rede
 
 ### No Host
 
@@ -147,26 +154,6 @@ Com ambos ativados, os dispositivos USB reconectam automaticamente após a reini
 - Cor do ícone: cinza (ocioso) / verde (dispositivo compartilhado/conectado)
 - Notificações em balão para eventos dos dispositivos
 
-## Arquitetura
-
-```
-Hyper-V Host                              Hyper-V Guest VM
-┌──────────────────────────┐               ┌──────────────────────────┐
-│ Dispositivo USB          │               │ USBRelay Client          │
-│        │                 │               │        │                 │
-│        ▼                 │  USB/IP       │        ▼                 │
-│   usbipd-win             │◄─────────────►│   usbip-win2 (VHCI)     │
-│   (bind/share)           │  Porta 3240   │   (attach/detach)        │
-│        │                 │               │        │                 │
-│        ▼                 │  HTTP REST    │        ▼                 │
-│ USBRelay Host            │◄─────────────►│ USBRelay Client          │
-│  ├─ API FastAPI :5757    │               │  ├─ API httpx            │
-│  ├─ Device Monitor       │               │  ├─ Device Poller        │
-│  ├─ Config Manager       │               │  ├─ Auto-Attach Worker   │
-│  └─ GUI PyQt6            │               │  └─ GUI PyQt6            │
-└──────────────────────────┘               └──────────────────────────┘
-```
-
 ## Endpoints da API
 
 | Método | Rota | Descrição |
@@ -181,15 +168,22 @@ Hyper-V Host                              Hyper-V Guest VM
 
 Autenticação: Chave de API opcional via cabeçalho `X-API-Key`.
 
+## Creditos
+
+Este projeto foi viabilizado por ferramentas de terceiros que tornam o compartilhamento USB no Windows possivel:
+
+- [usbipd-win](https://github.com/dorssel/usbipd-win)
+- [usbip-win2](https://github.com/cezanne/usbip-win2)
+
 ## Solução de Problemas
 
 | Problema | Solução |
 |---|---|
-| "usbipd-win not found" | Execute o instalador do Host (instala o usbipd-win automaticamente) |
+| "componente necessario nao encontrado" | Execute o instalador do Host novamente |
 | "Access denied" ao fazer bind | Execute o USBRelay Host como Administrador |
 | Client mostra "Offline" | Verifique IP do Host, porta `5757` e conectividade de rede |
 | Dispositivo não aparece na VM | Certifique-se de que o dispositivo está no estado "Shared" no Host |
-| "VHCI device not found" | Execute o instalador do Client (instala o driver VHCI do usbip-win2) |
+| "componente necessario nao encontrado" | Execute o instalador do Client novamente |
 | "Connection refused" porta 3240 | Libere a porta 3240 no firewall do Host (veja Pré-requisitos) |
 | Auto-attach não funciona | Verifique a lista de dispositivos permanentes em Settings; confirme que o host está acessível |
 | Porta já em uso | O USBRelay tenta incrementos (+1): 5758, 5759... |
@@ -205,11 +199,9 @@ Autenticação: Chave de API opcional via cabeçalho `X-API-Key`.
 ## Tecnologias
 
 - **Python 3.14** + **PyQt6** (GUI) + **FastAPI** (API REST) + **httpx** (HTTP client)
-- **usbipd-win** (host) — compartilhamento USB via protocolo USB/IP
-- **usbip-win2** (client) — driver VHCI certificado WHLK para Windows
 - **NSIS** — instaladores Windows
 - **PyInstaller** — empacotamento em executável (modo onedir)
 
 ## Licença
 
-Proprietária — OhMyTech Soluções Digitais
+Este projeto está licenciado sob os termos da licença MIT. Veja o arquivo [LICENSE.txt](LICENSE.txt) para os detalhes completos.
