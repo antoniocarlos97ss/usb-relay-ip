@@ -15,13 +15,13 @@ O USB Relay IP é uma aplicação desktop Windows de dois componentes para compa
 
 ### No Host Windows
 
-1. Windows 10/11
+1. Windows 10/11/Windows Server 2019/2022/2025
 2. Se estiver usando Hyper-V, habilite o switch virtual externo para comunicação entre máquinas
 3. Execute o USBRelay Host **como Administrador** (manifest UAC incluso)
 
 ### Na Máquina Cliente
 
-1. Windows 10 x64 (versão 1903+) ou Windows 11 ARM64
+1. Windows 10 x64 (versão 1903+) ou Windows 11 ARM64 ou Windows Server 2019/2022/2025
 2. Garanta conectividade de rede com a máquina Host
 3. **Porta 3240** deve estar liberada no firewall do Host
 
