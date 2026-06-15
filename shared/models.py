@@ -21,6 +21,7 @@ class CommandResult(BaseModel):
 class HealthStatus(BaseModel):
     status: str = "ok"
     usbipd_available: bool = False
+    usbipd_listening: bool = False
     usbipd_version: str = ""
     shared_count: int = 0
     uptime_seconds: float = 0.0

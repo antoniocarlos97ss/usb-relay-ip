@@ -63,7 +63,12 @@ class DeviceTable(QTableWidget):
             self.setItem(row, self.COL_BUSID, self._make_item(device.busid))
             self.setItem(row, self.COL_VID, self._make_item(device.vid.upper()))
             self.setItem(row, self.COL_PID, self._make_item(device.pid.upper()))
-            self.setItem(row, self.COL_DESCRIPTION, self._make_item(device.description))
+            
+            desc_item = self._make_item(device.description)
+            is_storage = any(k in device.description.lower() for k in ("storage", "mass storage", "drive", "disco", "armazenamento", "wd ", "western digital"))
+            if is_storage:
+                desc_item.setToolTip(t("table.storage_tooltip"))
+            self.setItem(row, self.COL_DESCRIPTION, desc_item)
 
             status_text = state_labels.get(device.state, device.state)
             status_item = self._make_item(status_text)

@@ -104,7 +104,14 @@ class HostMainWindow(QMainWindow):
         result = usbipd_wrapper.bind_device(busid)
         if result.success:
             logger.info(f"Device {busid} bound successfully")
-            self._tray.show_notification("USBRelay", t("notify.shared", busid=busid))
+            is_storage = False
+            if device:
+                is_storage = any(k in device.description.lower() for k in ("storage", "mass storage", "drive", "disco", "armazenamento", "wd ", "western digital"))
+            
+            if is_storage:
+                self._tray.show_notification("USBRelay", t("notify.shared_storage_warning", busid=busid))
+            else:
+                self._tray.show_notification("USBRelay", t("notify.shared", busid=busid))
         else:
             logger.error(f"Bind failed for {busid}: stdout={result.stdout!r} stderr={result.stderr!r}")
             self._tray.show_notification("USBRelay", t("notify.share_failed", busid=busid, msg=result.stderr or result.message))

@@ -3,8 +3,10 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from typing import Optional
 
 from shared.constants import USBIPD_EXE, USBIPD_MIN_VERSION
@@ -247,3 +249,49 @@ def get_device_state(busid: str) -> str:
         if device.busid == busid:
             return device.state
     return "Not shared"
+
+
+def check_port_listening(port: int = 3240) -> bool:
+    """Check if the given TCP port is listening on localhost."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1.0) as s:
+            return True
+    except Exception:
+        return False
+
+
+def ensure_service_running() -> tuple[bool, str]:
+    """Ensure that the usbipd service is running and listening on port 3240."""
+    if check_port_listening(3240):
+        return True, "Service is listening on port 3240."
+
+    logger.info("usbipd service is not listening. Attempting to start it...")
+    try:
+        # Check service status first using sc
+        query_proc = subprocess.run(
+            ["sc", "query", "usbipd"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        )
+        if "FAILED" in query_proc.stderr or "1060" in query_proc.stderr or "1060" in query_proc.stdout:
+            return False, "usbipd Windows Service is not installed."
+
+        # Start service
+        start_proc = subprocess.run(
+            ["sc", "start", "usbipd"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        )
+        
+        # Wait a bit for the service to bind port 3240
+        for _ in range(6):
+            time.sleep(0.5)
+            if check_port_listening(3240):
+                return True, "Service started and is listening on port 3240."
+
+        detail = f"Stdout: {start_proc.stdout.strip()} Stderr: {start_proc.stderr.strip()}"
+        return False, f"Attempted to start service, but port 3240 is still not listening. {detail}"
+    except Exception as exc:
+        return False, f"Failed to manage usbipd service: {exc}"

@@ -187,6 +187,11 @@ STRINGS = {
         "install.error_text": "Failed to install usbipd-win.",
         "install.success_title": "Installation Complete",
         "install.success_text": "usbipd-win has been installed.\nUSBRelay will now start.",
+
+        "usbipd_service.warning_title": "USBIP Service Not Listening",
+        "usbipd_service.warning_text": "The usbipd Windows Service is running but is not listening on port 3240. Remote clients will not be able to connect.\n\nWe attempted to automatically start/reset the service, but the port remains closed. Please verify your system settings or run 'sc start usbipd' as Administrator.",
+        "table.storage_tooltip": "Storage Device: Remember to safely eject/remove the media in Windows (Host) before attaching from the client.",
+        "notify.shared_storage_warning": "Device {busid} shared. Tip: Safely eject the drive on the Host before connecting from the client.",
     },
     "pt": {
         "app.name": "USBRelay",
@@ -324,6 +329,11 @@ STRINGS = {
         "install.error_text": "Falha ao instalar o usbipd-win.",
         "install.success_title": "Instalação Concluída",
         "install.success_text": "usbipd-win foi instalado.\nO USB Relay IP será iniciado agora.",
+
+        "usbipd_service.warning_title": "Serviço USBIP não está escutando",
+        "usbipd_service.warning_text": "O serviço usbipd do Windows está rodando, mas não está escutando na porta 3240. Os clientes remotos não conseguirão se conectar.\n\nTentamos iniciar/reiniciar o serviço automaticamente, mas a porta continua fechada. Verifique as configurações do sistema ou execute 'sc start usbipd' como Administrador.",
+        "table.storage_tooltip": "Dispositivo de Armazenamento: Lembre-se de ejetar a mídia com segurança no Windows (Host) antes de conectar pelo cliente.",
+        "notify.shared_storage_warning": "Dispositivo {busid} compartilhado. Dica: Ejete a unidade no Host com segurança antes de conectar pelo cliente.",
     },
 }
 

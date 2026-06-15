@@ -57,6 +57,15 @@ def _ensure_usbipd(parent=None) -> bool:
     from host.core import usbipd_wrapper
 
     if usbipd_wrapper.is_available():
+        success, msg = usbipd_wrapper.ensure_service_running()
+        if not success:
+            logger.warning(f"usbipd is installed but service check failed: {msg}")
+            if "--headless" not in sys.argv:
+                QMessageBox.warning(
+                    parent,
+                    t("usbipd_service.warning_title"),
+                    f"{t('usbipd_service.warning_text')}\n\n{msg}",
+                )
         return True
 
     reply = QMessageBox.question(
