@@ -260,38 +260,137 @@ def check_port_listening(port: int = 3240) -> bool:
         return False
 
 
-def ensure_service_running() -> tuple[bool, str]:
-    """Ensure that the usbipd service is running and listening on port 3240."""
-    if check_port_listening(3240):
-        return True, "Service is listening on port 3240."
+def get_service_state() -> str:
+    """Query the Windows Service status of usbipd.
 
-    logger.info("usbipd service is not listening. Attempting to start it...")
+    Returns one of: 'RUNNING', 'STOPPED', 'START_PENDING', 'STOP_PENDING',
+    'PAUSED', 'NOT_INSTALLED', or 'UNKNOWN'.
+    """
     try:
-        # Check service status first using sc
-        query_proc = subprocess.run(
+        proc = subprocess.run(
             ["sc", "query", "usbipd"],
             capture_output=True,
             text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
-        if "FAILED" in query_proc.stderr or "1060" in query_proc.stderr or "1060" in query_proc.stdout:
+        output = (proc.stdout or "") + (proc.stderr or "")
+
+        if "FAILED 1060" in output or "specified service does not exist" in output.lower():
+            return "NOT_INSTALLED"
+
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("STATE"):
+                # e.g. "STATE              : 4  RUNNING"
+                parts = line.split()
+                if len(parts) >= 3:
+                    return parts[-1].upper()
+        return "UNKNOWN"
+    except Exception as exc:
+        logger.warning(f"Failed to query usbipd service state: {exc}")
+        return "UNKNOWN"
+
+
+def _wait_for_port(port: int, total_seconds: float = 10.0, interval: float = 0.5) -> bool:
+    """Poll a TCP port until it's listening or timeout expires."""
+    elapsed = 0.0
+    while elapsed < total_seconds:
+        time.sleep(interval)
+        elapsed += interval
+        if check_port_listening(port):
+            return True
+    return False
+
+
+def ensure_service_running() -> tuple[bool, str]:
+    """Ensure that the usbipd service is running and listening on port 3240.
+
+    Robust against Windows Server edge cases:
+    - Detects STOP_PENDING and waits for it to settle before starting
+    - Tries forced restart (stop+start) if a plain start fails
+    - Allows up to 10s for the port to bind (Windows Server boots slower)
+    """
+    if check_port_listening(3240):
+        return True, "Service is listening on port 3240."
+
+    logger.info("usbipd service is not listening on port 3240. Attempting recovery...")
+
+    try:
+        state = get_service_state()
+        logger.info(f"usbipd service state: {state}")
+
+        if state == "NOT_INSTALLED":
             return False, "usbipd Windows Service is not installed."
 
-        # Start service
-        start_proc = subprocess.run(
-            ["sc", "start", "usbipd"],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        )
-        
-        # Wait a bit for the service to bind port 3240
-        for _ in range(6):
-            time.sleep(0.5)
-            if check_port_listening(3240):
+        # If STOP_PENDING, wait for the service to fully stop before starting
+        if state == "STOP_PENDING":
+            logger.info("Service is STOP_PENDING — waiting for it to settle...")
+            for _ in range(20):  # up to 10s
+                time.sleep(0.5)
+                state = get_service_state()
+                if state == "STOPPED":
+                    break
+                if state == "RUNNING" and check_port_listening(3240):
+                    return True, "Service recovered (transitioned to RUNNING)."
+            if state not in ("STOPPED", "RUNNING"):
+                detail = f"Service stuck in {state} after 10s wait."
+                logger.warning(detail)
+                # Fall through to forced restart attempt below
+
+        # If still not listening, attempt to start the service
+        if not check_port_listening(3240):
+            start_proc = subprocess.run(
+                ["sc", "start", "usbipd"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            logger.info(f"sc start usbipd: rc={start_proc.returncode} stdout={start_proc.stdout.strip()!r} stderr={start_proc.stderr.strip()!r}")
+
+            if _wait_for_port(3240, total_seconds=10.0):
                 return True, "Service started and is listening on port 3240."
 
-        detail = f"Stdout: {start_proc.stdout.strip()} Stderr: {start_proc.stderr.strip()}"
-        return False, f"Attempted to start service, but port 3240 is still not listening. {detail}"
+            # Plain start didn't work — refresh state and try forced restart (stop + start)
+            # Include STOPPED: if sc start failed on a stopped service, a stop+start
+            # cycle can clear a stuck state (common on Windows Server).
+            state = get_service_state()
+            if state in ("RUNNING", "START_PENDING", "STOP_PENDING", "STOPPED"):
+                logger.warning("Plain start failed — attempting forced restart (stop + start)...")
+                subprocess.run(
+                    ["sc", "stop", "usbipd"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+                # Wait for it to fully stop
+                for _ in range(20):
+                    time.sleep(0.5)
+                    s = get_service_state()
+                    if s == "STOPPED":
+                        break
+
+                subprocess.run(
+                    ["sc", "start", "usbipd"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+
+                if _wait_for_port(3240, total_seconds=10.0):
+                    return True, "Service force-restarted and is listening on port 3240."
+
+            detail = f"sc start stdout: {start_proc.stdout.strip()} stderr: {start_proc.stderr.strip()}"
+            current_state = get_service_state()
+            return False, (
+                f"Could not start usbipd service. Current state: {current_state}. {detail}"
+            )
+
+        return True, "Service is now listening on port 3240."
+
+    except subprocess.TimeoutExpired:
+        return False, "Timed out waiting for usbipd service to respond."
     except Exception as exc:
         return False, f"Failed to manage usbipd service: {exc}"

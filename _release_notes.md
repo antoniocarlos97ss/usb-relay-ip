@@ -4,6 +4,16 @@
 
 ---
 
+### Correções recentes no branch dev
+
+- O Host agora valida explicitamente se o serviço `usbipd` está realmente em execução antes de anunciar sucesso.
+- Foi adicionado monitoramento contínuo da porta 3240 com tentativa de auto-recuperação.
+- O health endpoint passou a expor o estado do serviço `usbipd`.
+- O Client passou a reagir ao estado do serviço e evita attach quando o Host está indisponível.
+- Foram criados testes para o wrapper do serviço e para o monitoramento contínuo.
+
+---
+
 O USB Relay IP é uma aplicação desktop Windows para compartilhar e reconectar dispositivos USB em cenários locais e remotos. O projeto nasceu para ajudar em ambientes Hyper-V, mas sua proposta é mais ampla: simplificar o acesso a hardware USB sempre que houver uma máquina host e um cliente Windows na rede.
 
 ### Destaques

@@ -154,6 +154,24 @@ Com ambos ativados, os dispositivos USB reconectam automaticamente após a reini
 - Cor do ícone: cinza (ocioso) / verde (dispositivo compartilhado/conectado)
 - Notificações em balão para eventos dos dispositivos
 
+
+## Últimas correções no branch dev
+
+As alterações mais recentes atacaram um problema real de indisponibilidade do serviço `usbipd` no Host, especialmente visível em Windows Server 2022/2025.
+
+### O que foi corrigido
+
+- O Host agora valida o estado real do serviço `usbipd` antes de anunciar que tudo está OK.
+- O monitoramento passou a verificar continuamente a porta 3240 e tenta auto-recuperação quando o serviço cai.
+- A barra de status e a bandeja do Host mostram quando a API está online, mas o `usbipd` está parado.
+- O Client passou a receber o estado de saúde do serviço e bloqueia attach quando o Host está indisponível.
+- O health endpoint agora expõe o estado do serviço `usbipd` com mais detalhes.
+- Foram adicionados testes novos para o wrapper do serviço e para o monitoramento contínuo.
+
+### Resultado prático
+
+O Host deixa de dar uma falsa sensação de disponibilidade quando o serviço subjacente está parado. Isso reduz os casos de `Connection refused` no Client e facilita o diagnóstico do problema.
+
 ## Endpoints da API
 
 | Método | Rota | Descrição |
