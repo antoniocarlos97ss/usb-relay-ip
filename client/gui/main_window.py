@@ -14,6 +14,7 @@ from client.gui.log_viewer import LogViewer
 from client.gui.settings_dialog import ClientSettingsDialog
 from client.gui.tray import ClientTrayIcon
 from shared.i18n import t
+from shared.widgets import BrandedHeader, StatusBadge
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,6 @@ class ClientMainWindow(QMainWindow):
         self._start_polling()
 
     def _setup_ui(self):
-        from shared.widgets import BrandedHeader, StatusBadge
-
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
@@ -193,11 +192,17 @@ class ClientMainWindow(QMainWindow):
         if service_ok:
             self._attach_btn.setEnabled(True)
             self._always_btn.setEnabled(True)
+            if self._api_client.is_connected():
+                config = config_manager.load_config()
+                self._status_badge.set_state("Conectado", "ok")
+                self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
             if old is False:
                 self._tray.show_notification("USBRelay", t("notify.host_service_recovered"))
         else:
             self._attach_btn.setEnabled(False)
             self._always_btn.setEnabled(False)
+            self._status_badge.set_state("Service Down", "error")
+            self._status_label.setText(t("status.host_service_down"))
             if old is not False:
                 self._tray.show_notification("USBRelay", t("notify.host_service_down"))
 

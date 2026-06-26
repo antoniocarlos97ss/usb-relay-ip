@@ -14,6 +14,7 @@ from host.gui.log_viewer import LogViewer
 from host.gui.settings_dialog import SettingsDialog
 from host.gui.tray import TrayIcon
 from shared.i18n import t
+from shared.widgets import BrandedHeader, StatusBadge
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,6 @@ class HostMainWindow(QMainWindow):
         self._start_monitor()
 
     def _setup_ui(self):
-        from shared.widgets import BrandedHeader, StatusBadge
-
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
@@ -248,19 +247,12 @@ class HostMainWindow(QMainWindow):
 
     def set_api_status(self, running: bool, port: int):
         self._api_port = port
-        if running:
-            if self._service_healthy:
-                self._status_label.setText(t("status.api_running", port=port))
-                self._status_badge.set_state("Online", "ok")
-                self._tray.set_connected_state(True)
-            else:
-                self._status_label.setText(t("status.api_service_down", port=port))
-                self._status_badge.set_state("Service Down", "error")
-                self._tray.set_service_down_state()
-        else:
+        if not running:
             self._status_label.setText(t("status.api_stopped"))
             self._status_badge.set_state("Stopped", "error")
             self._tray.set_connected_state(False)
+            return
+        self._update_status()
 
     def closeEvent(self, event: QCloseEvent):
         event.ignore()
