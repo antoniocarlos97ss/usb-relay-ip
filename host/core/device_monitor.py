@@ -14,18 +14,21 @@ class DeviceMonitor(QThread):
     device_bound = pyqtSignal(str, bool, str)
     device_unplugged = pyqtSignal(str)
     device_auto_bound = pyqtSignal(str, str)
+    device_auto_shared = pyqtSignal(str, str)
 
     def __init__(self, poll_interval: int = 5, parent=None):
         super().__init__(parent)
         self._poll_interval = poll_interval
         self._running = False
         self._previous_devices: list[UsbDevice] = []
+        self._failed_auto_share_busids: set[str] = set()
 
     def run(self):
         self._running = True
         logger.info("Device monitor started")
 
         self._auto_bind_permanent_on_startup()
+        self._auto_share_all_on_startup()
 
         while self._running:
             try:
@@ -36,6 +39,7 @@ class DeviceMonitor(QThread):
                     self.devices_changed.emit(current_devices)
                     self._handle_new_devices(current_devices)
 
+                self._handle_auto_share(current_devices)
                 self._previous_devices = current_devices
             except Exception as exc:
                 logger.error(f"Error in device monitor: {exc}")
@@ -61,9 +65,13 @@ class DeviceMonitor(QThread):
     def _device_list_changed(self, current_devices: list[UsbDevice]) -> bool:
         prev_ids = {d.busid for d in self._previous_devices}
         curr_ids = {d.busid for d in current_devices}
-        return prev_ids != curr_ids
+        if prev_ids != curr_ids:
+            return True
+        prev_states = {d.busid: d.state for d in self._previous_devices}
+        return any(prev_states.get(d.busid) != d.state for d in current_devices)
 
     def _handle_new_devices(self, current_devices: list[UsbDevice]):
+        self._failed_auto_share_busids.clear()
         prev_ids = {d.busid for d in self._previous_devices}
         for device in current_devices:
             if device.busid not in prev_ids:
@@ -111,3 +119,43 @@ class DeviceMonitor(QThread):
                 logger.info(f"Startup auto-bound: {matched.busid}")
             else:
                 logger.warning(f"Startup auto-bind failed for {matched.busid}: {result.message}")
+
+    def _auto_share_all_on_startup(self):
+        config = config_manager.load_config()
+        if not config.auto_share_all:
+            return
+
+        devices = usbipd_wrapper.list_devices()
+        exclude_set = set(config.auto_share_exclude)
+        for device in devices:
+            if device.state != "Not shared":
+                continue
+            if f"{device.vid.lower()}:{device.pid.lower()}" in exclude_set:
+                continue
+            result = usbipd_wrapper.bind_device(device.busid)
+            if result.success:
+                self.device_auto_shared.emit(device.busid, device.description)
+                logger.info(f"Startup auto-share: {device.busid} ({device.description})")
+            else:
+                logger.warning(f"Startup auto-share failed for {device.busid}: {result.message}")
+
+    def _handle_auto_share(self, current_devices: list[UsbDevice]):
+        config = config_manager.load_config()
+        if not config.auto_share_all:
+            return
+        exclude_set = set(config.auto_share_exclude)
+        for device in current_devices:
+            if device.state != "Not shared":
+                continue
+            if device.busid in self._failed_auto_share_busids:
+                continue
+            if f"{device.vid.lower()}:{device.pid.lower()}" in exclude_set:
+                continue
+            result = usbipd_wrapper.bind_device(device.busid)
+            if result.success:
+                self._failed_auto_share_busids.discard(device.busid)
+                self.device_auto_shared.emit(device.busid, device.description)
+                logger.info(f"Auto-share: bound {device.busid} ({device.description})")
+            else:
+                self._failed_auto_share_busids.add(device.busid)
+                logger.warning(f"Auto-share bind failed for {device.busid}: {result.message}")

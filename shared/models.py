@@ -55,6 +55,8 @@ class HostConfig(BaseModel):
     api_key: str = ""
     poll_interval_seconds: int = 5
     autostart_as_service: bool = False
+    auto_share_all: bool = False
+    auto_share_exclude: list[str] = Field(default_factory=list)
     permanent_devices: list[PermanentDevice] = Field(default_factory=list)
 
 

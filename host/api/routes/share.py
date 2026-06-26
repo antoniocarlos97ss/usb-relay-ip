@@ -66,4 +66,12 @@ def get_config(request: Request):
         "poll_interval_seconds": config.poll_interval_seconds,
         "autostart_as_service": config.autostart_as_service,
         "permanent_devices_count": len(config.permanent_devices),
+        "auto_share_all": config.auto_share_all,
+        "auto_share_exclude": config.auto_share_exclude,
     }
+
+
+@router.post("/config/auto-share")
+def set_auto_share(request: Request, enabled: bool):
+    config_manager.update_auto_share_all(enabled)
+    return {"success": True, "auto_share_all": enabled}

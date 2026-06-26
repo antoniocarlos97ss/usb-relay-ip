@@ -83,6 +83,7 @@ class HostMainWindow(QMainWindow):
         )
         self._monitor.devices_changed.connect(self._on_devices_changed)
         self._monitor.device_auto_bound.connect(self._on_device_auto_bound)
+        self._monitor.device_auto_shared.connect(self._on_device_auto_shared)
         self._monitor.start()
 
         # Start the service health monitor (checks port 3240 every N seconds)
@@ -175,6 +176,9 @@ class HostMainWindow(QMainWindow):
 
     def _on_device_auto_bound(self, busid: str, description: str):
         self._tray.show_notification("USBRelay", t("notify.auto_bound", busid=busid, desc=description))
+
+    def _on_device_auto_shared(self, busid: str, description: str):
+        self._tray.show_notification("USBRelay", t("notify.auto_share_bound", busid=busid, desc=description))
 
     # --- Service monitor handlers ---
 

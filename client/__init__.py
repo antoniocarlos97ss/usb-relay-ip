@@ -1,9 +1,15 @@
 """Client package root.
 
-Expose the main subpackages so unittest.mock.patch can resolve dotted names
-like `client.core.device_poller` reliably in tests.
+Lazy-load subpackages to avoid requiring PyQt6 at import time.
 """
 
-from . import api, core, gui
-
 __all__ = ["api", "core", "gui"]
+
+
+def __getattr__(name: str):
+    if name in __all__:
+        import importlib
+        module = importlib.import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
