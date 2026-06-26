@@ -1,5 +1,7 @@
 Unicode true
 
+!include "LogicLib.nsh"
+
 !define APP_NAME "USBRelayHost"
 !define APP_VERSION "1.0.0"
 !define COMPANY_NAME "OhMyTech"
@@ -38,6 +40,18 @@ Section "USB Relay IP Host" SEC01
     SetShellVarContext all
     SetOutPath "$INSTDIR"
     File /r "..\\dist\\USBRelayHost\\*"
+
+    IfFileExists "$SYSDIR\\usbipd.exe" usbipd_done 0
+    FindFirst $0 $1 "$INSTDIR\\_internal\\usbipd-install\\usbipd-win*.msi"
+    ${If} $1 != ""
+        DetailPrint "Instalando usbipd-win..."
+        ExecWait 'msiexec /i "$INSTDIR\\_internal\\usbipd-install\\$1" /quiet /norestart' $2
+        DetailPrint "usbipd-win install exit code: $2"
+    ${Else}
+        DetailPrint "Instalador usbipd-win nao encontrado em $INSTDIR\\_internal\\usbipd-install"
+    ${EndIf}
+    FindClose $0
+usbipd_done:
 
     WriteUninstaller "$INSTDIR\\Uninstall.exe"
     WriteRegStr HKLM "Software\\${COMPANY_NAME}\\${APP_NAME}" "InstallDir" "$INSTDIR"

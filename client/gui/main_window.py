@@ -169,15 +169,15 @@ class ClientMainWindow(QMainWindow):
             config = config_manager.load_config()
             if self._service_ok:
                 self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
-                self._status_badge.set_state("Conectado", "ok")
+                self._status_badge.set_state(t("status.badge_connected"), "ok")
                 self._tray.set_connected_state(True, config.host_ip)
             else:
                 self._status_label.setText(t("status.host_service_down"))
-                self._status_badge.set_state("Service Down", "error")
+                self._status_badge.set_state(t("status.badge_service_down"), "error")
                 self._tray.set_connected_state(True, config.host_ip)
         else:
             self._status_label.setText(t("status.offline_retry"))
-            self._status_badge.set_state("Offline", "error")
+            self._status_badge.set_state(t("status.badge_offline"), "error")
             self._tray.set_connected_state(False)
 
     def _on_service_status_changed(self, service_ok: bool):
@@ -194,14 +194,14 @@ class ClientMainWindow(QMainWindow):
             self._always_btn.setEnabled(True)
             if self._api_client.is_connected():
                 config = config_manager.load_config()
-                self._status_badge.set_state("Conectado", "ok")
+                self._status_badge.set_state(t("status.badge_connected"), "ok")
                 self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
             if old is False:
                 self._tray.show_notification("USBRelay", t("notify.host_service_recovered"))
         else:
             self._attach_btn.setEnabled(False)
             self._always_btn.setEnabled(False)
-            self._status_badge.set_state("Service Down", "error")
+            self._status_badge.set_state(t("status.badge_service_down"), "error")
             self._status_label.setText(t("status.host_service_down"))
             if old is not False:
                 self._tray.show_notification("USBRelay", t("notify.host_service_down"))

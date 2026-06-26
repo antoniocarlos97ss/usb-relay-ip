@@ -42,13 +42,13 @@ Os instaladores estão na pasta `dist/`:
 | `USBRelayClient_Setup.exe` | ~65 MB | Client |
 
 - O instalador do **Host** solicita privilégios de Administrador (UAC)
-- O instalador do **Client** prepara o ambiente necessário para conexão remota
+- O instalador do **Client** também solicita privilégios de Administrador para instalar o driver USBip (VHCI)
 - Se algum pré-requisito já estiver presente, a instalação pula a etapa correspondente automaticamente
 
 ### A Partir do Código-Fonte
 
 ```bash
-cd usbrelay
+cd usb-relay
 
 # Dependências compartilhadas
 pip install pydantic
@@ -68,7 +68,9 @@ python client/main.py
 
 ### Gerar Instaladores
 
-```bash
+```powershell
+cd usb-relay
+
 # Compilar Host (onedir + UAC admin)
 python -m PyInstaller --noconsole --onedir --uac-admin --name USBRelayHost \
   --add-data "host/assets/icon.ico;assets" \
@@ -87,6 +89,8 @@ python -m PyInstaller --noconsole --onedir --name USBRelayClient \
 makensis build/installer_host.nsi
 makensis build/installer_client.nsi
 ```
+
+Os binários Windows devem ser gerados em um ambiente Windows. O PyInstaller não produz executáveis Windows a partir de Linux.
 
 ## Guia Rápido
 

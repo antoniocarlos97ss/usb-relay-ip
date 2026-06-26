@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from shared.i18n import t
 from shared.theme import COLORS
 
 
@@ -150,27 +151,18 @@ _STATUS_ICON = {
     "idle": "●",
 }
 
-_STATUS_COLOR = {
-    "ok": COLORS["success"],
-    "warning": COLORS["warning"],
-    "error": COLORS["danger"],
-    "info": COLORS["accent"],
-    "idle": COLORS["text_muted"],
-}
-
-
 class StatusBadge(QLabel):
     """Compact status indicator pill — colored dot + text."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("StatusBadge")
-        self.set_state("", "idle")
+        self.set_state(t("status.checking"), "idle")
 
     def set_state(self, text: str, state: str = "idle"):
-        color = _STATUS_COLOR.get(state, COLORS["text_muted"])
         dot = _STATUS_ICON.get(state, "●")
         self.setText(f"{dot}  {text}")
-        self.setStyleSheet(
-            f"color: {color}; background: transparent; font-size: 11px; font-weight: 500;"
-        )
+        self.setProperty("state", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()

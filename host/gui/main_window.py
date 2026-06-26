@@ -230,26 +230,26 @@ class HostMainWindow(QMainWindow):
         if self._api_port > 0:
             if self._service_healthy:
                 self._status_label.setText(t("status.api_running", port=self._api_port))
-                self._status_badge.set_state("Online", "ok")
+                self._status_badge.set_state(t("status.badge_online"), "ok")
                 self._tray.set_connected_state(True)
             else:
                 self._status_label.setText(t("status.api_service_down", port=self._api_port))
-                self._status_badge.set_state("Service Down", "error")
+                self._status_badge.set_state(t("status.badge_service_down"), "error")
                 self._tray.set_service_down_state()
         else:
             if self._service_healthy:
                 self._status_label.setText(t("status.api_starting"))
-                self._status_badge.set_state("Iniciando", "info")
+                self._status_badge.set_state(t("status.badge_starting"), "info")
             else:
                 self._status_label.setText(t("status.api_service_down", port="?"))
-                self._status_badge.set_state("Service Down", "error")
+                self._status_badge.set_state(t("status.badge_service_down"), "error")
                 self._tray.set_service_down_state()
 
     def set_api_status(self, running: bool, port: int):
         self._api_port = port
         if not running:
             self._status_label.setText(t("status.api_stopped"))
-            self._status_badge.set_state("Stopped", "error")
+            self._status_badge.set_state(t("status.badge_stopped"), "error")
             self._tray.set_connected_state(False)
             return
         self._update_status()

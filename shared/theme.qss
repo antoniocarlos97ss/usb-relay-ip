@@ -185,6 +185,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 }
 
 #StatusBadge {
+    background-color: {{bg_elevated}};
+    border: 1px solid {{border_subtle}};
     border-radius: 4px;
     padding: 2px 6px;
     font-size: 10px;
@@ -192,22 +194,34 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     color: {{text_secondary}};
 }
 
-#StatusBadge[state="attached"] {
+#StatusBadge[state="ok"], #StatusBadge[state="shared"], #StatusBadge[state="available"], #StatusBadge[state="attached"] {
     background-color: rgba(88, 101, 242, 0.2);
     color: {{accent}};
     border: 1px solid rgba(88, 101, 242, 0.4);
 }
 
-#StatusBadge[state="shared"], #StatusBadge[state="available"] {
+#StatusBadge[state="warning"] {
+    background-color: rgba(245, 158, 11, 0.2);
+    color: {{warning}};
+    border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+#StatusBadge[state="info"] {
     background-color: rgba(16, 185, 129, 0.2);
     color: {{success}};
     border: 1px solid rgba(16, 185, 129, 0.4);
 }
 
-#StatusBadge[state="offline"] {
+#StatusBadge[state="error"], #StatusBadge[state="offline"] {
     background-color: rgba(239, 68, 68, 0.2);
     color: {{danger}};
     border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+#StatusBadge[state="idle"] {
+    background-color: {{bg_elevated}};
+    color: {{text_secondary}};
+    border: 1px solid {{border_subtle}};
 }
 
 /* ── Buttons ── */

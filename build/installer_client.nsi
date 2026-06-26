@@ -1,5 +1,7 @@
 Unicode true
 
+!include "LogicLib.nsh"
+
 !define APP_NAME "USBRelayClient"
 !define APP_VERSION "1.0.0"
 !define COMPANY_NAME "OhMyTech"
@@ -11,7 +13,7 @@ Name "${PRODUCT_NAME} - Client"
 OutFile "..\\dist\\USBRelayClient_Setup.exe"
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKCU "Software\\${COMPANY_NAME}\\${APP_NAME}" "InstallDir"
-RequestExecutionLevel user
+RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
@@ -39,6 +41,23 @@ Section "USB Relay IP Client" SEC01
     SetOutPath "$INSTDIR"
     File /r "..\\dist\\USBRelayClient\\*"
 
+    ; Install USBip driver (VHCI) only if not already present
+    ReadRegDWORD $0 HKLM "SYSTEM\\CurrentControlSet\\Services\\usbip2_ude" "Type"
+    ${If} ${Errors}
+        FindFirst $1 $2 "$INSTDIR\\_internal\\usbipd-install\\USBip\\USBip*.exe"
+        ${If} $2 != ""
+            DetailPrint "Instalando driver USBip (VHCI)..."
+            ExecWait '"$INSTDIR\\_internal\\usbipd-install\\USBip\\$2" /VERYSILENT /COMPONENTS=main,client /SUPPRESSMSGBOXES /NORESTART /SP-' $3
+            DetailPrint "USBip driver install exit code: $3"
+            DeleteRegKey HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{199505b0-b93d-4521-a8c7-897818e0205a}_is1"
+        ${Else}
+            DetailPrint "Instalador USBip nao encontrado em $INSTDIR\\_internal\\usbipd-install\\USBip"
+        ${EndIf}
+        FindClose $1
+    ${Else}
+        DetailPrint "Driver USBip VHCI ja instalado, pulando..."
+    ${EndIf}
+
     WriteUninstaller "$INSTDIR\\Uninstall.exe"
     WriteRegStr HKCU "Software\\${COMPANY_NAME}\\${APP_NAME}" "InstallDir" "$INSTDIR"
     WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}" "DisplayName" "${PRODUCT_NAME} - Client"
@@ -54,6 +73,8 @@ SectionEnd
 
 Section "Uninstall"
     SetShellVarContext current
+    IfFileExists "$PROGRAMFILES64\\USBip\\unins000.exe" 0 +2
+    ExecWait '"$PROGRAMFILES64\\USBip\\unins000.exe" /VERYSILENT /NORESTART'
     Delete "$DESKTOP\\USB Relay IP Client.lnk"
     Delete "$SMPROGRAMS\\${START_MENU_DIR}\\USB Relay IP Client.lnk"
     RMDir "$SMPROGRAMS\\${START_MENU_DIR}"
