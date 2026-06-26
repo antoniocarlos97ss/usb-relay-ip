@@ -34,13 +34,14 @@ class BrandedHeader(QWidget):
 
         # Logo monogram — styled circle with "UR"
         logo = QLabel("UR")
-        logo.setFixedSize(34, 34)
+        _logo_size = 34
+        logo.setFixedSize(_logo_size, _logo_size)
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo.setStyleSheet(f"""
             QLabel {{
                 background-color: {COLORS['accent']};
                 color: #ffffff;
-                border-radius: 17px;
+                border-radius: {_logo_size // 2}px;
                 font-weight: 700;
                 font-size: 13px;
             }}
@@ -52,18 +53,18 @@ class BrandedHeader(QWidget):
         title_col.setSpacing(0)
         title_col.setContentsMargins(0, 0, 0, 0)
 
-        title_lbl = QLabel(title)
-        title_lbl.setStyleSheet(
+        self._title_lbl = QLabel(title)
+        self._title_lbl.setStyleSheet(
             "color: #ffffff; font-size: 14px; font-weight: 600; background: transparent;"
         )
-        title_col.addWidget(title_lbl)
+        title_col.addWidget(self._title_lbl)
 
-        if subtitle:
-            sub_lbl = QLabel(subtitle)
-            sub_lbl.setStyleSheet(
+        self._subtitle_lbl = QLabel(subtitle) if subtitle else None
+        if self._subtitle_lbl:
+            self._subtitle_lbl.setStyleSheet(
                 "color: rgba(255,255,255,0.7); font-size: 11px; background: transparent;"
             )
-            title_col.addWidget(sub_lbl)
+            title_col.addWidget(self._subtitle_lbl)
 
         layout.addLayout(title_col)
         layout.addStretch()
@@ -85,6 +86,24 @@ class BrandedHeader(QWidget):
             layout.addWidget(badge)
 
 
+# Module-level constant (avoids mutable class-level dict)
+_STATUS_ICON = {
+    "ok": "●",
+    "warning": "●",
+    "error": "✗",
+    "info": "●",
+    "idle": "●",
+}
+
+_STATUS_COLOR = {
+    "ok": COLORS["success"],
+    "warning": COLORS["warning"],
+    "error": COLORS["danger"],
+    "info": COLORS["accent"],
+    "idle": COLORS["text_muted"],
+}
+
+
 class StatusBadge(QLabel):
     """Compact status indicator pill — colored dot + text.
 
@@ -95,25 +114,12 @@ class StatusBadge(QLabel):
         badge.set_state("Iniciando", "info")   # accent dot
     """
 
-    _DOT = {
-        "ok": "●",
-        "warning": "●",
-        "error": "✗",
-        "info": "●",
-        "idle": "●",
-    }
 
-    _COLOR_MAP = {
-        "ok": COLORS["success"],
-        "warning": COLORS["warning"],
-        "error": COLORS["danger"],
-        "info": COLORS["accent"],
-        "idle": COLORS["text_muted"],
-    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("StatusBadge")
+        self.set_state("", "idle")
 
     def set_state(self, text: str, state: str = "idle"):
         """Update the badge text and color.
@@ -122,8 +128,8 @@ class StatusBadge(QLabel):
             text: Display text (e.g. "Online", "Offline", "Service Down")
             state: One of "ok", "warning", "error", "info", "idle"
         """
-        color = self._COLOR_MAP.get(state, COLORS["text_muted"])
-        dot = self._DOT.get(state, "●")
+        color = _STATUS_COLOR.get(state, COLORS["text_muted"])
+        dot = _STATUS_ICON.get(state, "●")
         self.setText(f"{dot}  {text}")
         self.setStyleSheet(
             f"color: {color}; background: transparent; font-size: 11px; font-weight: 500;"
