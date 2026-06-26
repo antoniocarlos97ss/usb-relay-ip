@@ -1,7 +1,7 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
-    QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QFrame, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
+    QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from client.core import config_manager
@@ -20,7 +20,20 @@ class ClientSettingsDialog(QWidget):
         self._load_settings()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(12)
 
         conn_group = QGroupBox(t("settings.host_connection"))
         conn_layout = QFormLayout()
@@ -48,7 +61,7 @@ class ClientSettingsDialog(QWidget):
 
         conn_layout.addRow(t("settings.api_key"), key_layout)
         conn_group.setLayout(conn_layout)
-        layout.addWidget(conn_group)
+        content_layout.addWidget(conn_group)
 
         monitor_group = QGroupBox(t("settings.polling"))
         monitor_layout = QFormLayout()
@@ -60,7 +73,7 @@ class ClientSettingsDialog(QWidget):
         monitor_layout.addRow(t("settings.poll_interval"), self._poll_spin)
 
         monitor_group.setLayout(monitor_layout)
-        layout.addWidget(monitor_group)
+        content_layout.addWidget(monitor_group)
 
         startup_group = QGroupBox(t("settings.startup"))
         startup_layout = QVBoxLayout()
@@ -69,9 +82,14 @@ class ClientSettingsDialog(QWidget):
         startup_layout.addWidget(self._autostart_check)
 
         startup_group.setLayout(startup_layout)
-        layout.addWidget(startup_group)
+        content_layout.addWidget(startup_group)
+
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(12, 0, 12, 12)
         btn_layout.addStretch()
 
         apply_btn = QPushButton(t("btn.apply"))
@@ -79,7 +97,7 @@ class ClientSettingsDialog(QWidget):
         apply_btn.clicked.connect(self._apply)
         btn_layout.addWidget(apply_btn)
 
-        layout.addLayout(btn_layout)
+        root_layout.addLayout(btn_layout)
 
     def _toggle_key_visibility(self, checked: bool):
         if checked:

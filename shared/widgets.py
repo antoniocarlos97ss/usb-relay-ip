@@ -1,27 +1,49 @@
 """Reusable branded widgets for USB Relay IP — OhMyTech corporate identity.
 
 Provides:
-- BrandedHeader: dark header bar with logo monogram, title, subtitle, instance badge
+- BrandedHeader: dark header bar with real app logo, title, subtitle, instance badge
 - StatusBadge: compact status indicator pill (colored dot + text)
 """
 
+from pathlib import Path
+import sys
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from shared.theme import COLORS
 
 
-class BrandedHeader(QWidget):
-    """Dark header banner with app logo monogram, title, subtitle, and instance badge.
+def _resolve_brand_logo_path() -> str | None:
+    """Locate the custom installer/app logo bundled with the app or available in repo."""
+    candidates = []
 
-    Usage:
-        header = BrandedHeader(
-            title="USB Relay IP",
-            subtitle="Host — Compartilhamento de dispositivos USB via rede",
-            instance="HOST",
-        )
-        main_layout.addWidget(header)
-    """
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        if meipass:
+            candidates.append(meipass / "assets" / "icon.ico")
+            candidates.append(meipass / "assets" / "icon_connected.ico")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates.extend(
+        [
+            repo_root / "host" / "assets" / "icon.ico",
+            repo_root / "client" / "assets" / "icon.ico",
+            repo_root / "host" / "assets" / "icon_connected.ico",
+            repo_root / "client" / "assets" / "icon_connected.ico",
+            repo_root / "assets" / "icon.ico",
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+class BrandedHeader(QWidget):
+    """Dark header banner with logo, title, subtitle, and instance badge."""
 
     def __init__(self, title: str, subtitle: str = "", instance: str = "", parent=None):
         super().__init__(parent)
@@ -32,23 +54,56 @@ class BrandedHeader(QWidget):
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(12)
 
-        # Logo monogram — styled circle with "UR"
-        logo = QLabel("UR")
-        _logo_size = 34
-        logo.setFixedSize(_logo_size, _logo_size)
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo.setStyleSheet(f"""
+        self._logo = QLabel()
+        logo_size = 34
+        self._logo.setFixedSize(logo_size, logo_size)
+        self._logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._logo.setStyleSheet(
+            f"""
             QLabel {{
-                background-color: {COLORS['accent']};
-                color: #ffffff;
-                border-radius: {_logo_size // 2}px;
-                font-weight: 700;
-                font-size: 13px;
+                background-color: {COLORS['bg_elevated']};
+                color: {COLORS['accent']};
+                border: 1px solid {COLORS['border_subtle']};
+                border-radius: 12px;
             }}
-        """)
-        layout.addWidget(logo)
+            """
+        )
 
-        # Title + subtitle column
+        logo_path = _resolve_brand_logo_path()
+        if logo_path:
+            pixmap = QIcon(logo_path).pixmap(logo_size, logo_size)
+            if not pixmap.isNull():
+                self._logo.setPixmap(pixmap)
+                self._logo.setStyleSheet("background: transparent; border: none;")
+            else:
+                self._logo.setText("UR")
+                self._logo.setStyleSheet(
+                    f"""
+                    QLabel {{
+                        background-color: {COLORS['accent']};
+                        color: #ffffff;
+                        border-radius: {logo_size // 2}px;
+                        font-weight: 700;
+                        font-size: 13px;
+                    }}
+                    """
+                )
+        else:
+            self._logo.setText("UR")
+            self._logo.setStyleSheet(
+                f"""
+                QLabel {{
+                    background-color: {COLORS['accent']};
+                    color: #ffffff;
+                    border-radius: {logo_size // 2}px;
+                    font-weight: 700;
+                    font-size: 13px;
+                }}
+                """
+            )
+
+        layout.addWidget(self._logo)
+
         title_col = QVBoxLayout()
         title_col.setSpacing(0)
         title_col.setContentsMargins(0, 0, 0, 0)
@@ -69,10 +124,10 @@ class BrandedHeader(QWidget):
         layout.addLayout(title_col)
         layout.addStretch()
 
-        # Instance badge (HOST / CLIENT)
         if instance:
             badge = QLabel(instance)
-            badge.setStyleSheet(f"""
+            badge.setStyleSheet(
+                f"""
                 QLabel {{
                     background-color: rgba(88, 101, 242, 0.15);
                     color: {COLORS['accent']};
@@ -82,15 +137,15 @@ class BrandedHeader(QWidget):
                     font-size: 10px;
                     font-weight: 600;
                 }}
-            """)
+                """
+            )
             layout.addWidget(badge)
 
 
-# Module-level constant (avoids mutable class-level dict)
 _STATUS_ICON = {
     "ok": "●",
     "warning": "●",
-    "error": "✗",
+    "error": "●",
     "info": "●",
     "idle": "●",
 }
@@ -105,16 +160,7 @@ _STATUS_COLOR = {
 
 
 class StatusBadge(QLabel):
-    """Compact status indicator pill — colored dot + text.
-
-    Usage:
-        badge = StatusBadge()
-        badge.set_state("Online", "ok")       # green dot
-        badge.set_state("Offline", "error")    # red dot
-        badge.set_state("Iniciando", "info")   # accent dot
-    """
-
-
+    """Compact status indicator pill — colored dot + text."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -122,12 +168,6 @@ class StatusBadge(QLabel):
         self.set_state("", "idle")
 
     def set_state(self, text: str, state: str = "idle"):
-        """Update the badge text and color.
-
-        Args:
-            text: Display text (e.g. "Online", "Offline", "Service Down")
-            state: One of "ok", "warning", "error", "info", "idle"
-        """
         color = _STATUS_COLOR.get(state, COLORS["text_muted"])
         dot = _STATUS_ICON.get(state, "●")
         self.setText(f"{dot}  {text}")
