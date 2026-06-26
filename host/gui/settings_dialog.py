@@ -19,6 +19,7 @@ class SettingsDialog(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("HostSettingsDialog")
         self.setWindowTitle(t("settings.host_title"))
         self.setMinimumWidth(480)
         self._setup_ui()
@@ -36,6 +37,7 @@ class SettingsDialog(QWidget):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         content = QWidget()
+        content.setObjectName("SettingsContent")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(12, 12, 12, 12)
         content_layout.setSpacing(12)
@@ -199,20 +201,22 @@ class SettingsDialog(QWidget):
         self._on_auto_share_toggled(config.auto_share_all)
 
     def _apply(self):
-        config_manager.update_api_port(self._port_spin.value())
-        config_manager.update_api_key(self._api_key_input.text())
-        config_manager.update_poll_interval(self._poll_spin.value())
-        logon_ok, boot_ok = config_manager.update_autostart(self._autostart_check.isChecked())
+        config = config_manager.load_config()
+        config.api_port = self._port_spin.value()
+        config.api_key = self._api_key_input.text()
+        config.poll_interval_seconds = self._poll_spin.value()
+        config.autostart_as_service = self._autostart_check.isChecked()
 
-        if self._autostart_check.isChecked():
+        logon_ok, boot_ok = config_manager.update_autostart(config.autostart_as_service)
+
+        if config.autostart_as_service:
             lines = []
             lines.append(f"{'✔' if logon_ok else '✘'} {t('settings.autostart_logon_ok') if logon_ok else t('settings.autostart_logon_fail')}")
             lines.append(f"{'✔' if boot_ok else '✘'} {t('settings.autostart_boot_ok') if boot_ok else t('settings.autostart_boot_needs_admin')}")
             QMessageBox.information(self, t("settings.autostart_result_title"), "\n".join(lines))
 
-        # Save auto-share settings
         auto_share_enabled = self._auto_share_check.isChecked()
-        if auto_share_enabled and not self._api_key_input.text():
+        if auto_share_enabled and not config.api_key:
             reply = QMessageBox.warning(
                 self, t("settings.auto_share_group"),
                 t("settings.auto_share_no_key_warning") + "\n\n" + t("dialog.continue"),
@@ -222,13 +226,8 @@ class SettingsDialog(QWidget):
                 self._auto_share_check.setChecked(False)
                 auto_share_enabled = False
 
-        config_manager.update_auto_share_all(auto_share_enabled)
-
-        # Save exclusions: clear all and re-add
-        config = config_manager.load_config()
-        config.auto_share_exclude = []
-        for i in range(self._exclusion_list.count()):
-            config.auto_share_exclude.append(self._exclusion_list.item(i).text())
+        config.auto_share_all = auto_share_enabled
+        config.auto_share_exclude = [self._exclusion_list.item(i).text() for i in range(self._exclusion_list.count())]
         config_manager.save_config(config)
 
         self.settings_applied.emit()

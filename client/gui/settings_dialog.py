@@ -14,6 +14,7 @@ class ClientSettingsDialog(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("ClientSettingsDialog")
         self.setWindowTitle(t("settings.client_title"))
         self.setMinimumWidth(420)
         self._setup_ui()
@@ -31,6 +32,7 @@ class ClientSettingsDialog(QWidget):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         content = QWidget()
+        content.setObjectName("SettingsContent")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(12, 12, 12, 12)
         content_layout.setSpacing(12)
@@ -133,7 +135,5 @@ class ClientSettingsDialog(QWidget):
                 QMessageBox.information(self, t("settings.autostart"), msg)
             else:
                 QMessageBox.warning(self, t("settings.autostart"), t("settings.autostart_failed"))
-        else:
-            QMessageBox.information(self, t("settings.autostart"), t("settings.autostart_disabled"))
 
         self.settings_applied.emit()

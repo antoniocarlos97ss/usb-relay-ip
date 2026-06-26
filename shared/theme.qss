@@ -189,7 +189,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     padding: 2px 6px;
     font-size: 10px;
     font-weight: bold;
-    color: #ffffff;
+    color: {{text_secondary}};
 }
 
 #StatusBadge[state="attached"] {
@@ -409,6 +409,40 @@ QSpinBox {
 
 QSpinBox:focus {
     border: 1px solid {{border_focus}};
+}
+
+/* ── Settings dialogs ──
+   Softer field contrast so editable controls blend with the section cards. */
+#HostSettingsDialog QGroupBox::title,
+#ClientSettingsDialog QGroupBox::title {
+    background-color: {{bg_base}};
+}
+
+#HostSettingsDialog QGroupBox,
+#ClientSettingsDialog QGroupBox {
+    background-color: {{bg_surface}};
+}
+
+#HostSettingsDialog #SettingsContent,
+#ClientSettingsDialog #SettingsContent {
+    background-color: {{bg_base}};
+}
+
+#HostSettingsDialog QLineEdit,
+#HostSettingsDialog QSpinBox,
+#HostSettingsDialog QListWidget,
+#ClientSettingsDialog QLineEdit,
+#ClientSettingsDialog QSpinBox {
+    background-color: {{bg_elevated}};
+    border-color: {{border_hover}};
+}
+
+#HostSettingsDialog QLineEdit:focus,
+#HostSettingsDialog QSpinBox:focus,
+#HostSettingsDialog QListWidget:focus,
+#ClientSettingsDialog QLineEdit:focus,
+#ClientSettingsDialog QSpinBox:focus {
+    border-color: {{accent}};
 }
 
 /* ── CheckBox ── */
