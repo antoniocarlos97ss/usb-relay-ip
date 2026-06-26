@@ -38,17 +38,34 @@ COLORS = {
     "brand_gold": "#f59e0b",
 }
 
-# Semantic QColor shortcuts (for Python-side setForeground calls)
-QCOLOR = {
-    "success": QColor(COLORS["success"]),
-    "warning": QColor(COLORS["warning"]),
-    "danger": QColor(COLORS["danger"]),
-    "info": QColor(COLORS["info"]),
-    "gold": QColor(COLORS["brand_gold"]),
-    "accent": QColor(COLORS["accent"]),
-    "muted": QColor(COLORS["text_muted"]),
-    "secondary": QColor(COLORS["text_secondary"]),
-}
+# Semantic QColor shortcuts — lazy init (QColor requires QApplication)
+_qcolor_cache = None
+
+def get_qcolors():
+    """Return dict of named QColor objects. Call after QApplication is created."""
+    global _qcolor_cache
+    if _qcolor_cache is None:
+        _qcolor_cache = {
+            "success":  QColor(COLORS["success"]),
+            "warning":  QColor(COLORS["warning"]),
+            "danger":   QColor(COLORS["danger"]),
+            "info":     QColor(COLORS["info"]),
+            "gold":     QColor(COLORS["brand_gold"]),
+            "accent":   QColor(COLORS["accent"]),
+            "muted":    QColor(COLORS["text_muted"]),
+            "secondary": QColor(COLORS["text_secondary"]),
+        }
+    return _qcolor_cache
+
+
+class _QCOLORProxy:
+    """Lazy proxy — defers QColor construction until first access."""
+    def __getitem__(self, key):
+        return get_qcolors()[key]
+    def __contains__(self, key):
+        return key in get_qcolors()
+
+QCOLOR = _QCOLORProxy()
 
 # Log viewer color palette (unified — replaces Tokyo Night ad-hoc values)
 LOG_COLORS = {
@@ -62,7 +79,7 @@ LOG_COLORS = {
     "CRITICAL": "#bb9af3",
 }
 
-QSS_PATH = Path(__file__).parent / "theme.qss"
+QSS_PATH = (Path(__file__).parent / "theme.qss").resolve()
 
 
 def apply_theme(app: QApplication):
@@ -85,11 +102,16 @@ def apply_theme(app: QApplication):
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
     palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(COLORS["bg_elevated"]))
     palette.setColor(QPalette.ColorRole.ToolTipText, QColor(COLORS["text_primary"]))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(COLORS["text_muted"]))
     app.setPalette(palette)
 
     # Load and apply global QSS with token substitution
+    import logging
+    _logger = logging.getLogger(__name__)
     if QSS_PATH.exists():
         qss = QSS_PATH.read_text(encoding="utf-8")
         for key, value in COLORS.items():
             qss = qss.replace("{{" + key + "}}", value)
         app.setStyleSheet(qss)
+    else:
+        _logger.warning(f"theme.qss not found at {QSS_PATH} — UI will use default Fusion styling")

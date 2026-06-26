@@ -395,11 +395,7 @@ QLineEdit {
 }
 
 QLineEdit:focus {
-    border: 1px solid {{accent}};
-}
-
-QLineEdit::placeholder {
-    color: {{text_muted}};
+    border: 1px solid {{border_focus}};
 }
 
 QSpinBox {
@@ -412,7 +408,7 @@ QSpinBox {
 }
 
 QSpinBox:focus {
-    border: 1px solid {{accent}};
+    border: 1px solid {{border_focus}};
 }
 
 /* ── CheckBox ── */

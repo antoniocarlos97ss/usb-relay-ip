@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 from shared.constants import APP_NAME
 from shared.i18n import t
 
+logger = logging.getLogger(__name__)
+
 
 def setup_logging():
     appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -216,11 +218,15 @@ def main():
         app.setQuitOnLastWindowClosed(False)
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion("1.0.0")
-        from shared.theme import apply_theme
-        apply_theme(app)
     except Exception as exc:
         logger.critical(f"QApplication init failed: {exc}")
         return
+
+    from shared.theme import apply_theme
+    try:
+        apply_theme(app)
+    except Exception as exc:
+        _write_crash(f"apply_theme failed: {exc}")
 
     if not _ensure_usbipd():
         sys.exit(1)
