@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 )
 
 from shared.i18n import t
+from shared.theme import LOG_COLORS
 
 
 class QTextEditLogger(logging.Handler):
@@ -22,8 +23,29 @@ class QTextEditLogger(logging.Handler):
     def emit(self, record: logging.LogRecord):
         if record.levelno < self._min_level:
             return
-        msg = self.format(record)
-        self._widget.appendPlainText(msg)
+        
+        c = LOG_COLORS
+        if record.levelno == logging.DEBUG:
+            lvl_color, lvl_text = c["DEBUG"], "DEBUG"
+        elif record.levelno == logging.INFO:
+            lvl_color, lvl_text = c["INFO"], "INFO"
+        elif record.levelno == logging.WARNING:
+            lvl_color, lvl_text = c["WARNING"], "WARN"
+        elif record.levelno == logging.ERROR:
+            lvl_color, lvl_text = c["ERROR"], "ERROR"
+        else:
+            lvl_color, lvl_text = c["CRITICAL"], record.levelname
+
+        asctime = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+        
+        # HTML formatting for terminal logs
+        html = (
+            f"<span style='color:{c['timestamp']};'>{asctime}</span> "
+            f"<span style='color:{lvl_color}; font-weight:bold;'>[{lvl_text}]</span> "
+            f"<span style='color:{c['logger']};'>{record.name}:</span> "
+            f"<span style='color:{c['message']};'>{record.getMessage()}</span>"
+        )
+        self._widget.appendHtml(html)
 
 
 class LogViewer(QWidget):
@@ -34,8 +56,12 @@ class LogViewer(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
         toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(2, 2, 2, 2)
+        
         toolbar.addWidget(QLabel(t("log.level")))
 
         self._level_combo = QComboBox()
@@ -58,19 +84,19 @@ class LogViewer(QWidget):
 
         self._log_view = QPlainTextEdit()
         self._log_view.setReadOnly(True)
-        font = QFont("Consolas", 9)
+        
+        font = QFont()
+        font.setFamily("Consolas")
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setPointSize(10)
         self._log_view.setFont(font)
         self._log_view.setMaximumBlockCount(5000)
+        
         layout.addWidget(self._log_view)
 
     def _setup_log_handler(self):
         self._handler = QTextEditLogger(self._log_view)
         self._handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        )
-        self._handler.setFormatter(formatter)
         logging.getLogger().addHandler(self._handler)
 
     def _on_level_changed(self, level_str: str):

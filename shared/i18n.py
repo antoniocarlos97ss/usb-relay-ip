@@ -215,6 +215,9 @@ STRINGS = {
         "settings.auto_share_add_prompt": "Enter VID:PID to exclude (e.g. 046d:c31c):",
         "settings.auto_share_invalid_format": "Invalid format. Use VID:PID (e.g. 046d:c31c).",
         "notify.auto_share_bound": "Device {busid} ({desc}) auto-shared.",
+        "card.tooltip_permanent": "Auto-attach on startup",
+        "card.tooltip_not_permanent": "Mark for auto-attach",
+        "card.no_devices": "No USB devices shared by the server.",
     },
     "pt": {
         "app.name": "USBRelay",
@@ -380,6 +383,9 @@ STRINGS = {
         "settings.auto_share_add_prompt": "Digite VID:PID para excluir (ex: 046d:c31c):",
         "settings.auto_share_invalid_format": "Formato inválido. Use VID:PID (ex: 046d:c31c).",
         "notify.auto_share_bound": "Dispositivo {busid} ({desc}) auto-compartilhado.",
+        "card.tooltip_permanent": "Auto-conectar ao iniciar",
+        "card.tooltip_not_permanent": "Marcar para auto-conectar",
+        "card.no_devices": "Nenhum dispositivo USB compartilhado pelo servidor.",
     },
 }
 

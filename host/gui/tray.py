@@ -6,22 +6,32 @@ from shared.i18n import t
 
 
 def _make_icon(color: str) -> QIcon:
+    from shared.theme import COLORS
     pixmap = QPixmap(32, 32)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(Qt.GlobalColor.white)
+
+    # Background circle (brand deep)
+    painter.setBrush(QColor(COLORS["brand_deep"]))
+    painter.setPen(Qt.PenStyle.NoPen)
     painter.drawEllipse(2, 2, 28, 28)
-    if color == "gray":
-        painter.setBrush(Qt.GlobalColor.gray)
-    elif color == "red":
-        painter.setBrush(Qt.GlobalColor.red)
-    else:
-        painter.setBrush(Qt.GlobalColor.darkGreen)
-    painter.drawEllipse(5, 5, 22, 22)
+
+    # Inner state indicator
+    state_color = QColor(COLORS.get(color, COLORS["text_muted"]))
+    painter.setBrush(state_color)
+    painter.drawEllipse(8, 8, 16, 16)
+
+    # "UR" monogram
+    painter.setPen(QColor("#ffffff"))
+    font = painter.font()
+    font.setPointSize(7)
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "UR")
+
     painter.end()
     return QIcon(pixmap)
-
 
 def _load_icon(path: str, fallback_color: str) -> QIcon:
     if not path:

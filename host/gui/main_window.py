@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 
 from host.core import config_manager, device_monitor, service_monitor, usbipd_wrapper
 from host.gui.device_table import DeviceTable
-from host.gui.log_viewer import LogViewer
+from shared.log_viewer import LogViewer
 from host.gui.settings_dialog import SettingsDialog
 from host.gui.tray import TrayIcon
 from shared.i18n import t

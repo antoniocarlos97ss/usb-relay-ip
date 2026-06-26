@@ -75,6 +75,7 @@ class ClientSettingsDialog(QWidget):
         btn_layout.addStretch()
 
         apply_btn = QPushButton(t("btn.apply"))
+        apply_btn.setProperty("cssClass", "primary")
         apply_btn.clicked.connect(self._apply)
         btn_layout.addWidget(apply_btn)
 

@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 )
 
 from host.core import config_manager
+from shared.theme import COLORS
 from shared.constants import DEFAULT_API_PORT, POLL_INTERVAL_DEFAULT
 from shared.i18n import t
 
@@ -84,13 +85,13 @@ class SettingsDialog(QWidget):
         auto_share_layout.addWidget(self._auto_share_check)
 
         self._auto_share_warning = QLabel(t("settings.auto_share_warning"))
-        self._auto_share_warning.setStyleSheet("color: #e67e22; font-weight: bold;")
+        self._auto_share_warning.setStyleSheet(f"color: {COLORS['warning']}; font-weight: bold; background: transparent;")
         self._auto_share_warning.setWordWrap(True)
         self._auto_share_warning.setVisible(False)
         auto_share_layout.addWidget(self._auto_share_warning)
 
         self._auto_share_key_warning = QLabel(t("settings.auto_share_no_key_warning"))
-        self._auto_share_key_warning.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        self._auto_share_key_warning.setStyleSheet(f"color: {COLORS['danger']}; font-weight: bold; background: transparent;")
         self._auto_share_key_warning.setWordWrap(True)
         self._auto_share_key_warning.setVisible(False)
         auto_share_layout.addWidget(self._auto_share_key_warning)
@@ -120,6 +121,7 @@ class SettingsDialog(QWidget):
         btn_layout.addStretch()
 
         apply_btn = QPushButton(t("btn.apply"))
+        apply_btn.setProperty("cssClass", "primary")
         apply_btn.clicked.connect(self._apply)
         btn_layout.addWidget(apply_btn)
 

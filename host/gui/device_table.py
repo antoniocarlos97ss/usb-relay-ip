@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from shared.theme import QCOLOR
 from PyQt6.QtWidgets import QHeaderView, QMenu, QTableWidget, QTableWidgetItem
 
 from shared.i18n import t
@@ -73,16 +73,16 @@ class DeviceTable(QTableWidget):
             status_text = state_labels.get(device.state, device.state)
             status_item = self._make_item(status_text)
             if device.state == "Shared":
-                status_item.setForeground(QColor("#22aa22"))
+                status_item.setForeground(QCOLOR["success"])
             elif device.state == "Attached":
-                status_item.setForeground(QColor("#2266cc"))
+                status_item.setForeground(QCOLOR["info"])
             else:
-                status_item.setForeground(QColor("#cc2222"))
+                status_item.setForeground(QCOLOR["danger"])
             self.setItem(row, self.COL_STATUS, status_item)
 
             perm_item = self._make_item("\u2605" if device.is_permanent else "")
             if device.is_permanent:
-                perm_item.setForeground(QColor("#ddaa00"))
+                perm_item.setForeground(QCOLOR["gold"])
             self.setItem(row, self.COL_PERMANENT, perm_item)
 
     def _make_item(self, text: str) -> QTableWidgetItem:
