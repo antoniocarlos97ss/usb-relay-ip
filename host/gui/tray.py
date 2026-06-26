@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
 from shared.i18n import t
@@ -48,9 +48,9 @@ def _load_icon(path: str, fallback_color: str) -> QIcon:
 class TrayIcon(QSystemTrayIcon):
     def __init__(self, icon_path: str, connected_icon_path: str, parent=None):
         super().__init__(parent)
-        self._default_icon = _load_icon(icon_path, "gray") if icon_path else _make_icon("gray")
-        self._connected_icon = _load_icon(connected_icon_path, "green") if connected_icon_path else _make_icon("green")
-        self._warning_icon = _make_icon("red")
+        self._default_icon = _load_icon(icon_path, "gray") if icon_path else _make_icon("text_muted")
+        self._connected_icon = _load_icon(connected_icon_path, "green") if connected_icon_path else _make_icon("success")
+        self._warning_icon = _make_icon("danger")
 
         self.setIcon(self._default_icon)
         self.setToolTip("USB Relay IP Host")
