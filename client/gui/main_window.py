@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 
 from client.api.host_client import HostApiClient
 from client.core import config_manager, device_poller, usbip_worker, usbip_wrapper
-from client.gui.device_table import ClientDeviceTable
+from client.gui.device_cards import ClientDeviceCards as ClientDeviceTable
 from client.gui.log_viewer import LogViewer
 from client.gui.settings_dialog import ClientSettingsDialog
 from client.gui.tray import ClientTrayIcon
@@ -50,6 +50,8 @@ class ClientMainWindow(QMainWindow):
 
         self.setWindowTitle(t("client.title"))
         self.setMinimumSize(700, 450)
+        
+
         self._workers: list = []
         self._setup_ui()
         self._start_auto_attach()

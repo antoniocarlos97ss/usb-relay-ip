@@ -1,0 +1,574 @@
+/* ══════════════════════════════════════════════════════════════
+   USB Relay IP — Unified Dark Corporate Theme
+   Tokenized QSS: {{token_name}} replaced by shared/theme.py
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── Global defaults ── */
+QWidget {
+    background-color: {{bg_base}};
+    color: {{text_primary}};
+    font-family: "Segoe UI", "Inter", sans-serif;
+    font-size: 12px;
+}
+
+QMainWindow {
+    background-color: {{bg_base}};
+}
+
+/* ── Status Bar ── */
+QStatusBar {
+    background-color: {{bg_surface}};
+    color: {{text_secondary}};
+    border-top: 1px solid {{border_subtle}};
+    font-size: 11px;
+}
+
+QStatusBar QLabel {
+    color: {{text_secondary}};
+    padding-left: 5px;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+/* ── Tab Widget ── */
+QTabWidget::pane {
+    border: 1px solid {{border_subtle}};
+    background-color: {{bg_surface}};
+    border-radius: 6px;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background-color: {{bg_input}};
+    color: {{text_secondary}};
+    padding: 8px 16px;
+    margin-right: 2px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    border: 1px solid {{border_subtle}};
+    border-bottom: none;
+    font-weight: 500;
+}
+
+QTabBar::tab:hover {
+    background-color: {{bg_hover}};
+    color: {{text_primary}};
+}
+
+QTabBar::tab:selected {
+    background-color: {{bg_surface}};
+    color: {{accent}};
+    border-bottom: 2px solid {{accent}};
+    font-weight: bold;
+}
+
+/* ── Scroll Area (Cards) ── */
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+#DeviceCardsScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+#DeviceCardsContainer {
+    background-color: transparent;
+}
+
+/* ── ScrollBars ── */
+QScrollBar:vertical {
+    border: none;
+    background-color: {{bg_base}};
+    width: 8px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: {{border_hover}};
+    min-height: 20px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: {{text_muted}};
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background-color: {{bg_base}};
+    height: 8px;
+    margin: 0px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: {{border_hover}};
+    min-width: 20px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: {{text_muted}};
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+/* ── Device Card ── */
+#DeviceCard {
+    background-color: {{bg_elevated}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 8px;
+}
+
+#DeviceCard:hover {
+    background-color: {{bg_hover}};
+    border: 1px solid {{border_hover}};
+}
+
+#DeviceCard[selected="true"] {
+    background-color: {{bg_selected}};
+    border: 1px solid {{accent}};
+}
+
+#CardIndicator {
+    border-radius: 2px;
+}
+
+#DeviceCard[state="attached"] #CardIndicator {
+    background-color: {{accent}};
+}
+
+#DeviceCard[state="shared"] #CardIndicator {
+    background-color: {{success}};
+}
+
+#DeviceCard[state="available"] #CardIndicator {
+    background-color: {{success}};
+}
+
+#DeviceCard[state="offline"] #CardIndicator {
+    background-color: {{danger}};
+}
+
+/* ── Card Typography ── */
+#CardTitle {
+    color: {{text_primary}};
+    font-size: 13px;
+    font-weight: bold;
+}
+
+#NoDevicesLabel {
+    color: {{text_secondary}};
+    font-size: 14px;
+    font-style: italic;
+    padding: 40px;
+}
+
+/* ── Badges ── */
+#Badge {
+    background-color: {{bg_input}};
+    color: {{text_secondary}};
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: "Cascadia Code", "Consolas", "Courier New", monospace;
+    font-size: 10px;
+    border: 1px solid {{border_subtle}};
+}
+
+#StatusBadge {
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+#StatusBadge[state="attached"] {
+    background-color: rgba(88, 101, 242, 0.2);
+    color: {{accent}};
+    border: 1px solid rgba(88, 101, 242, 0.4);
+}
+
+#StatusBadge[state="shared"], #StatusBadge[state="available"] {
+    background-color: rgba(16, 185, 129, 0.2);
+    color: {{success}};
+    border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+#StatusBadge[state="offline"] {
+    background-color: rgba(239, 68, 68, 0.2);
+    color: {{danger}};
+    border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+/* ── Buttons ── */
+QPushButton {
+    background-color: {{bg_elevated}};
+    color: {{text_primary}};
+    border: 1px solid {{border_hover}};
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background-color: {{bg_hover}};
+    border-color: {{border_hover}};
+}
+
+QPushButton:pressed {
+    background-color: {{bg_base}};
+}
+
+QPushButton:disabled {
+    color: {{text_muted}};
+    background-color: {{bg_surface}};
+    border-color: {{border_subtle}};
+}
+
+QPushButton[cssClass="primary"] {
+    background-color: {{accent}};
+    color: #ffffff;
+    border: 1px solid {{accent_hover}};
+    font-weight: 600;
+}
+
+QPushButton[cssClass="primary"]:hover {
+    background-color: {{accent_hover}};
+}
+
+QPushButton[cssClass="primary"]:pressed {
+    background-color: {{accent_pressed}};
+}
+
+QPushButton[cssClass="primary"]:disabled {
+    background-color: {{bg_surface}};
+    color: {{text_muted}};
+    border-color: {{border_subtle}};
+}
+
+QPushButton[cssClass="ghost"] {
+    background-color: transparent;
+    border: 1px solid transparent;
+    padding: 6px 12px;
+}
+
+QPushButton[cssClass="ghost"]:hover {
+    background-color: {{bg_hover}};
+    border-color: {{border_subtle}};
+}
+
+/* ── Star Button ── */
+#StarButton {
+    background-color: transparent;
+    border: none;
+    font-size: 18px;
+    padding: 0px 4px;
+}
+
+#StarButton[active="true"] {
+    color: {{warning}};
+}
+
+#StarButton[active="false"] {
+    color: {{text_muted}};
+}
+
+#StarButton:hover {
+    color: #fbbf24;
+}
+
+/* ── Card Action Button ── */
+#CardActionButton {
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-weight: bold;
+    font-size: 11px;
+}
+
+#CardActionButton[styleClass="primary"] {
+    background-color: {{accent}};
+    border: 1px solid {{accent_hover}};
+    color: #ffffff;
+}
+
+#CardActionButton[styleClass="primary"]:hover {
+    background-color: {{accent_hover}};
+}
+
+#CardActionButton[styleClass="danger"] {
+    background-color: {{danger}};
+    border: 1px solid #dc2626;
+    color: #ffffff;
+}
+
+#CardActionButton[styleClass="danger"]:hover {
+    background-color: #dc2626;
+}
+
+#CardActionButton[styleClass="disabled"] {
+    background-color: {{bg_base}};
+    border: 1px solid {{border_subtle}};
+    color: {{text_muted}};
+}
+
+/* ── ComboBox ── */
+QComboBox {
+    background-color: {{bg_input}};
+    color: {{text_primary}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-width: 90px;
+}
+
+QComboBox:hover {
+    border-color: {{border_hover}};
+}
+
+QComboBox::drop-down {
+    border: none;
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: {{bg_input}};
+    color: {{text_primary}};
+    border: 1px solid {{border_subtle}};
+    selection-background-color: {{accent}};
+}
+
+/* ── QPlainTextEdit (Log Viewer) ── */
+QPlainTextEdit {
+    background-color: #0c0d12;
+    color: #a9b1d6;
+    border: 1px solid {{border_subtle}};
+    border-radius: 6px;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 10pt;
+    padding: 8px;
+}
+
+/* ── GroupBox (Settings sections) ── */
+QGroupBox {
+    background-color: {{bg_elevated}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 8px;
+    margin-top: 16px;
+    padding-top: 16px;
+    padding-left: 8px;
+    padding-right: 8px;
+    padding-bottom: 8px;
+    font-weight: bold;
+    color: {{text_primary}};
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0px 4px;
+    background-color: {{bg_surface}};
+    color: {{accent}};
+}
+
+/* ── Inputs ── */
+QLineEdit {
+    background-color: {{bg_input}};
+    color: {{text_primary}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 4px;
+    padding: 6px;
+    selection-background-color: {{accent}};
+}
+
+QLineEdit:focus {
+    border: 1px solid {{accent}};
+}
+
+QLineEdit::placeholder {
+    color: {{text_muted}};
+}
+
+QSpinBox {
+    background-color: {{bg_input}};
+    color: {{text_primary}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 4px;
+    padding: 4px 6px;
+    min-height: 20px;
+}
+
+QSpinBox:focus {
+    border: 1px solid {{accent}};
+}
+
+/* ── CheckBox ── */
+QCheckBox {
+    color: {{text_secondary}};
+    spacing: 8px;
+}
+
+QCheckBox:hover {
+    color: {{text_primary}};
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid {{border_subtle}};
+    border-radius: 3px;
+    background-color: {{bg_input}};
+}
+
+QCheckBox::indicator:unchecked:hover {
+    border-color: {{accent}};
+}
+
+QCheckBox::indicator:checked {
+    background-color: {{accent}};
+    border-color: {{accent}};
+}
+
+QCheckBox::indicator:checked:hover {
+    background-color: {{accent_hover}};
+    border-color: {{accent_hover}};
+}
+
+/* ══════════════════════════════════════════════════════════════
+   HOST-ONLY widgets (QTableWidget, QHeaderView, QMenu, etc.)
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── QTableWidget ── */
+QTableWidget {
+    background-color: {{bg_surface}};
+    alternate-background-color: {{bg_elevated}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 6px;
+    gridline-color: {{border_subtle}};
+    font-size: 12px;
+}
+
+QTableWidget::item {
+    padding: 8px 12px;
+    border: none;
+}
+
+QTableWidget::item:selected {
+    background-color: {{bg_selected}};
+    color: {{text_primary}};
+}
+
+QTableWidget::item:hover {
+    background-color: {{bg_hover}};
+}
+
+QHeaderView::section {
+    background-color: {{bg_surface}};
+    color: {{text_secondary}};
+    padding: 8px 12px;
+    border: none;
+    border-right: 1px solid {{border_subtle}};
+    border-bottom: 1px solid {{border_subtle}};
+    font-weight: 600;
+    font-size: 11px;
+}
+
+QTableCornerButton::section {
+    background-color: {{bg_surface}};
+    border: none;
+    border-bottom: 1px solid {{border_subtle}};
+}
+
+/* ── QMenu (context menus, tray menus) ── */
+QMenu {
+    background-color: {{bg_elevated}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 6px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 6px 24px 6px 16px;
+    border-radius: 4px;
+    color: {{text_primary}};
+}
+
+QMenu::item:selected {
+    background-color: {{accent}};
+    color: #ffffff;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: {{border_subtle}};
+    margin: 4px 8px;
+}
+
+/* ── QToolTip ── */
+QToolTip {
+    background-color: {{bg_elevated}};
+    color: {{text_primary}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+/* ── QListWidget (exclusion list in Host settings) ── */
+QListWidget {
+    background-color: {{bg_input}};
+    border: 1px solid {{border_subtle}};
+    border-radius: 4px;
+    color: {{text_primary}};
+    font-size: 12px;
+}
+
+QListWidget::item {
+    padding: 4px 8px;
+}
+
+QListWidget::item:selected {
+    background-color: {{bg_selected}};
+    color: {{text_primary}};
+}
+
+/* ── QDialog, QMessageBox, QInputDialog ── */
+QDialog, QMessageBox, QInputDialog {
+    background-color: {{bg_base}};
+}
+
+QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel {
+    color: {{text_primary}};
+    font-size: 13px;
+    background: transparent;
+}
+
+/* ── BrandedHeader widget ── */
+BrandedHeader {
+    background-color: {{brand_deep}};
+    border-bottom: 1px solid {{border_subtle}};
+}
+
+BrandedHeader QLabel {
+    background: transparent;
+}
+
+/* ── StatusBadge widget (shared/widgets.py) ── */
+StatusBadge {
+    background: transparent;
+    font-size: 11px;
+    font-weight: 600;
+}

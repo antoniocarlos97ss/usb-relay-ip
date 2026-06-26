@@ -215,7 +215,8 @@ def main():
         app.setQuitOnLastWindowClosed(False)
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion("1.0.0")
-        app.setStyle("Fusion")
+        from shared.theme import apply_theme
+        apply_theme(app)
     except Exception as exc:
         _write_crash(f"QApplication init failed: {exc}")
         return
