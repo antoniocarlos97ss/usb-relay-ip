@@ -58,25 +58,43 @@ class ClientMainWindow(QMainWindow):
         self._start_polling()
 
     def _setup_ui(self):
+        from shared.widgets import BrandedHeader, StatusBadge
+
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
+        # Branded header
+        header = BrandedHeader(
+            title="USB Relay IP",
+            subtitle="Client \u2014 Conex\u00e3o remota a dispositivos USB",
+            instance="CLIENT",
+        )
+        main_layout.addWidget(header)
+
+        # Toolbar
         toolbar = QHBoxLayout()
-        self._refresh_btn = QPushButton(t("btn.refresh"))
-        self._refresh_btn.clicked.connect(self._poller_refresh)
+        toolbar.setContentsMargins(12, 6, 12, 6)
         toolbar.addStretch()
+        self._refresh_btn = QPushButton(t("btn.refresh"))
+        self._refresh_btn.setProperty("cssClass", "ghost")
+        self._refresh_btn.clicked.connect(self._poller_refresh)
         toolbar.addWidget(self._refresh_btn)
         main_layout.addLayout(toolbar)
 
-        self._device_table = ClientDeviceTable()
-        self._device_table.attach_requested.connect(self._attach_device)
-        self._device_table.detach_requested.connect(self._detach_device)
-        self._device_table.permanent_toggle.connect(self._toggle_permanent)
-        main_layout.addWidget(self._device_table)
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(12, 4, 12, 12)
+        content_layout.setSpacing(12)
 
+        # Action buttons (above tabs)
         action_layout = QHBoxLayout()
+        action_layout.setSpacing(8)
         self._attach_btn = QPushButton(t("btn.attach_selected"))
+        self._attach_btn.setProperty("cssClass", "primary")
         self._attach_btn.clicked.connect(self._on_attach_clicked)
         action_layout.addWidget(self._attach_btn)
 
@@ -88,19 +106,29 @@ class ClientMainWindow(QMainWindow):
         self._always_btn.clicked.connect(self._on_always_attach_clicked)
         action_layout.addWidget(self._always_btn)
         action_layout.addStretch()
-        main_layout.addLayout(action_layout)
+        content_layout.addLayout(action_layout)
 
+        # Tabs -- device_table added ONLY here (fixes double-add bug)
         tabs = QTabWidget()
+        self._device_table = ClientDeviceTable()
+        self._device_table.attach_requested.connect(self._attach_device)
+        self._device_table.detach_requested.connect(self._detach_device)
+        self._device_table.permanent_toggle.connect(self._toggle_permanent)
         tabs.addTab(self._device_table, t("tab.devices"))
         tabs.addTab(LogViewer(), t("tab.log"))
 
         self._settings_tab = ClientSettingsTab(self)
         self._settings_tab.settings_changed.connect(self._on_settings_changed)
         tabs.addTab(self._settings_tab, t("tab.settings"))
-        main_layout.addWidget(tabs)
+        content_layout.addWidget(tabs)
 
+        main_layout.addWidget(content)
+
+        # Status bar with badge
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
+        self._status_badge = StatusBadge()
+        self._status_bar.addWidget(self._status_badge)
         self._status_label = QLabel(t("status.connecting"))
         self._status_bar.addWidget(self._status_label)
 
@@ -142,12 +170,15 @@ class ClientMainWindow(QMainWindow):
             config = config_manager.load_config()
             if self._service_ok:
                 self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
+                self._status_badge.set_state("Conectado", "ok")
                 self._tray.set_connected_state(True, config.host_ip)
             else:
                 self._status_label.setText(t("status.host_service_down"))
+                self._status_badge.set_state("Service Down", "error")
                 self._tray.set_connected_state(True, config.host_ip)
         else:
             self._status_label.setText(t("status.offline_retry"))
+            self._status_badge.set_state("Offline", "error")
             self._tray.set_connected_state(False)
 
     def _on_service_status_changed(self, service_ok: bool):

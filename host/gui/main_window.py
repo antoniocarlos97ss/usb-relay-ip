@@ -33,25 +33,43 @@ class HostMainWindow(QMainWindow):
         self._start_monitor()
 
     def _setup_ui(self):
+        from shared.widgets import BrandedHeader, StatusBadge
+
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
+        # Branded header
+        header = BrandedHeader(
+            title="USB Relay IP",
+            subtitle="Host \u2014 Compartilhamento de dispositivos USB via rede",
+            instance="HOST",
+        )
+        main_layout.addWidget(header)
+
+        # Toolbar
         toolbar = QHBoxLayout()
-        self._refresh_btn = QPushButton(t("btn.refresh"))
-        self._refresh_btn.clicked.connect(self._refresh_devices)
+        toolbar.setContentsMargins(12, 6, 12, 6)
         toolbar.addStretch()
+        self._refresh_btn = QPushButton(t("btn.refresh"))
+        self._refresh_btn.setProperty("cssClass", "ghost")
+        self._refresh_btn.clicked.connect(self._refresh_devices)
         toolbar.addWidget(self._refresh_btn)
         main_layout.addLayout(toolbar)
 
-        self._device_table = DeviceTable(is_host=True)
-        self._device_table.share_requested.connect(self._share_device)
-        self._device_table.unshare_requested.connect(self._unshare_device)
-        self._device_table.permanent_toggle.connect(self._toggle_permanent)
-        main_layout.addWidget(self._device_table)
+        # Content area
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(12, 4, 12, 12)
+        content_layout.setSpacing(12)
 
+        # Action buttons (above tabs)
         action_layout = QHBoxLayout()
+        action_layout.setSpacing(8)
         self._share_btn = QPushButton(t("btn.share_selected"))
+        self._share_btn.setProperty("cssClass", "primary")
         self._share_btn.clicked.connect(self._on_share_clicked)
         action_layout.addWidget(self._share_btn)
 
@@ -63,16 +81,26 @@ class HostMainWindow(QMainWindow):
         self._always_btn.clicked.connect(self._on_always_share_clicked)
         action_layout.addWidget(self._always_btn)
         action_layout.addStretch()
-        main_layout.addLayout(action_layout)
+        content_layout.addLayout(action_layout)
 
+        # Tabs -- device_table added ONLY here (fixes double-add bug)
         tabs = QTabWidget()
+        self._device_table = DeviceTable(is_host=True)
+        self._device_table.share_requested.connect(self._share_device)
+        self._device_table.unshare_requested.connect(self._unshare_device)
+        self._device_table.permanent_toggle.connect(self._toggle_permanent)
         tabs.addTab(self._device_table, t("tab.devices"))
         tabs.addTab(LogViewer(), t("tab.log"))
         tabs.addTab(SettingsDialog(self), t("tab.settings"))
-        main_layout.addWidget(tabs)
+        content_layout.addWidget(tabs)
 
+        main_layout.addWidget(content)
+
+        # Status bar with badge
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
+        self._status_badge = StatusBadge()
+        self._status_bar.addWidget(self._status_badge)
         self._status_label = QLabel(t("status.api_starting"))
         self._status_bar.addWidget(self._status_label)
 
@@ -203,16 +231,19 @@ class HostMainWindow(QMainWindow):
         if self._api_port > 0:
             if self._service_healthy:
                 self._status_label.setText(t("status.api_running", port=self._api_port))
+                self._status_badge.set_state("Online", "ok")
                 self._tray.set_connected_state(True)
             else:
                 self._status_label.setText(t("status.api_service_down", port=self._api_port))
+                self._status_badge.set_state("Service Down", "error")
                 self._tray.set_service_down_state()
         else:
-            # API port not yet known (startup). Set tray to warning state.
             if self._service_healthy:
                 self._status_label.setText(t("status.api_starting"))
+                self._status_badge.set_state("Iniciando", "info")
             else:
                 self._status_label.setText(t("status.api_service_down", port="?"))
+                self._status_badge.set_state("Service Down", "error")
                 self._tray.set_service_down_state()
 
     def set_api_status(self, running: bool, port: int):
@@ -220,12 +251,15 @@ class HostMainWindow(QMainWindow):
         if running:
             if self._service_healthy:
                 self._status_label.setText(t("status.api_running", port=port))
+                self._status_badge.set_state("Online", "ok")
                 self._tray.set_connected_state(True)
             else:
                 self._status_label.setText(t("status.api_service_down", port=port))
+                self._status_badge.set_state("Service Down", "error")
                 self._tray.set_service_down_state()
         else:
             self._status_label.setText(t("status.api_stopped"))
+            self._status_badge.set_state("Stopped", "error")
             self._tray.set_connected_state(False)
 
     def closeEvent(self, event: QCloseEvent):
