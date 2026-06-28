@@ -121,6 +121,7 @@ class ClientMainWindow(QMainWindow):
         )
         self._poller.devices_fetched.connect(self._on_devices_fetched)
         self._poller.connection_changed.connect(self._on_connection_changed)
+        self._poller.session_lost.connect(self._on_session_lost)
         self._poller.start()
 
     def _restart_poller(self):
@@ -132,6 +133,23 @@ class ClientMainWindow(QMainWindow):
         for device in devices:
             device.is_permanent = config_manager.is_permanent(device.vid, device.pid)
         self._device_table.update_devices(devices)
+        self._sync_attached_busids()
+        self._auto_reattach_permanent(devices)
+
+    def _auto_reattach_permanent(self, devices):
+        config = config_manager.load_config()
+        perm_set = {(p.vid, p.pid) for p in config.permanent_devices if p.auto_attach}
+        for dev in devices:
+            if (dev.vid, dev.pid) in perm_set and dev.state == "Shared" and dev.busid not in self._port_map:
+                self._attach_device(dev.busid)
+
+    def _sync_attached_busids(self):
+        if hasattr(self, "_poller") and self._poller:
+            self._poller.update_attached_busids(set(self._port_map.keys()))
+
+    def _on_session_lost(self, busid: str):
+        logger.warning(f"Local session lost for {busid}, attempting recovery")
+        self._retry_attach_stale(busid)
 
     def _on_connection_changed(self, connected: bool, host: str):
         if connected:
@@ -141,6 +159,7 @@ class ClientMainWindow(QMainWindow):
         else:
             self._status_label.setText(t("status.offline_retry"))
             self._tray.set_connected_state(False)
+        self._sync_attached_busids()
 
     def _attach_device(self, busid: str):
         config = config_manager.load_config()
@@ -173,10 +192,13 @@ class ClientMainWindow(QMainWindow):
     def _retry_attach_stale(self, busid: str):
         logger.info(f"Trying to recover stale device {busid} via host unbind+rebind")
         self._api_client.unbind_device(busid)
-        import time
-        time.sleep(2)
+        QTimer.singleShot(2000, lambda: self._rebind_then_attach(busid))
+
+    def _rebind_then_attach(self, busid: str):
         self._api_client.bind_device(busid)
-        time.sleep(2)
+        QTimer.singleShot(2000, lambda: self._do_attach_after_reset(busid))
+
+    def _do_attach_after_reset(self, busid: str):
         config = config_manager.load_config()
         worker = usbip_worker.AttachWorker(config.host_ip, busid)
         worker.finished.connect(self._on_attach_finished)
@@ -184,6 +206,7 @@ class ClientMainWindow(QMainWindow):
         worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
         self._workers.append(worker)
         worker.start()
+        self._poller_refresh()
 
     def _detach_device(self, busid: str):
         logger.info(f"Detaching device {busid}")

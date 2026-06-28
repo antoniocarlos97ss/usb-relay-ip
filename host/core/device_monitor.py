@@ -20,6 +20,8 @@ class DeviceMonitor(QThread):
         self._poll_interval = poll_interval
         self._running = False
         self._previous_devices: list[UsbDevice] = []
+        self._attached_since: dict[str, float] = {}
+        self._stale_threshold: float = 15.0
 
     def run(self):
         self._running = True
@@ -36,6 +38,7 @@ class DeviceMonitor(QThread):
                     self.devices_changed.emit(current_devices)
                     self._handle_new_devices(current_devices)
 
+                self._check_stale_attachments(current_devices)
                 self._previous_devices = current_devices
             except Exception as exc:
                 logger.error(f"Error in device monitor: {exc}")
@@ -59,9 +62,9 @@ class DeviceMonitor(QThread):
             device.is_permanent = config_manager.is_permanent(device.vid, device.pid)
 
     def _device_list_changed(self, current_devices: list[UsbDevice]) -> bool:
-        prev_ids = {d.busid for d in self._previous_devices}
-        curr_ids = {d.busid for d in current_devices}
-        return prev_ids != curr_ids
+        prev = {(d.busid, d.state) for d in self._previous_devices}
+        curr = {(d.busid, d.state) for d in current_devices}
+        return prev != curr
 
     def _handle_new_devices(self, current_devices: list[UsbDevice]):
         prev_ids = {d.busid for d in self._previous_devices}
@@ -81,6 +84,25 @@ class DeviceMonitor(QThread):
             if prev_device.busid not in curr_ids:
                 self.device_unplugged.emit(prev_device.busid)
                 logger.info(f"Device removed: {prev_device.busid}")
+
+    def _check_stale_attachments(self, current_devices: list[UsbDevice]) -> None:
+        now = time.time()
+        current_busids = {d.busid for d in current_devices}
+
+        for stale_busid in list(self._attached_since.keys()):
+            if stale_busid not in current_busids:
+                self._attached_since.pop(stale_busid, None)
+
+        for dev in current_devices:
+            if dev.state == "Attached" and dev.is_permanent:
+                start = self._attached_since.setdefault(dev.busid, now)
+                if (now - start) >= self._stale_threshold and not usbipd_wrapper.check_port_listening(3240):
+                    logger.warning(f"Stale attachment detected for {dev.busid}, forcing rebind")
+                    usbipd_wrapper.unbind_device(dev.busid)
+                    usbipd_wrapper.bind_device(dev.busid)
+                    self._attached_since.pop(dev.busid, None)
+            else:
+                self._attached_since.pop(dev.busid, None)
 
     def _auto_bind_permanent_on_startup(self):
         config = config_manager.load_config()

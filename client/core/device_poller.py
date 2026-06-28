@@ -5,6 +5,7 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from client.api.host_client import HostApiClient
+from client.core import usbip_wrapper
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 class DevicePoller(QThread):
     devices_fetched = pyqtSignal(list)
     connection_changed = pyqtSignal(bool, str)
+    session_lost = pyqtSignal(str)
 
     def __init__(self, api_client: HostApiClient, poll_interval: int = 10, parent=None):
         super().__init__(parent)
@@ -20,9 +22,13 @@ class DevicePoller(QThread):
         self._running = False
         self._refresh_now = False
         self._lock = threading.Lock()
+        self._known_attached_busids: set[str] = set()
 
     def set_poll_interval(self, seconds: int):
         self._poll_interval = max(1, seconds)
+
+    def update_attached_busids(self, busids: set[str]) -> None:
+        self._known_attached_busids = set(busids)
 
     def refresh_now(self):
         self._refresh_now = True
@@ -35,6 +41,13 @@ class DevicePoller(QThread):
             connected = self._client.is_connected()
             self.devices_fetched.emit(devices)
             self.connection_changed.emit(connected, self._client.host_ip)
+
+            if connected and self._known_attached_busids:
+                attached_now = {d.busid for d in usbip_wrapper.list_attached()}
+                for busid in list(self._known_attached_busids):
+                    if busid not in attached_now:
+                        self.session_lost.emit(busid)
+                        self._known_attached_busids.discard(busid)
         except Exception as exc:
             logger.error(f"Poll error: {exc}")
             self.connection_changed.emit(False, "")

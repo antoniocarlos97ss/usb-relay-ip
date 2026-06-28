@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter, Request
 
 from host.core import config_manager, usbipd_wrapper
@@ -24,6 +26,14 @@ def bind_device(busid: str, request: Request):
 @router.post("/devices/{busid}/unbind")
 def unbind_device(busid: str, request: Request):
     result = usbipd_wrapper.unbind_device(busid)
+    return result.model_dump()
+
+
+@router.post("/devices/{busid}/reset")
+def reset_device(busid: str):
+    usbipd_wrapper.unbind_device(busid)
+    time.sleep(1)
+    result = usbipd_wrapper.bind_device(busid)
     return result.model_dump()
 
 

@@ -52,7 +52,7 @@ class ClientPermanentDevice(BaseModel):
 class HostConfig(BaseModel):
     api_port: int = 5757
     api_key: str = ""
-    poll_interval_seconds: int = 5
+    poll_interval_seconds: int = 3
     autostart_as_service: bool = False
     permanent_devices: list[PermanentDevice] = Field(default_factory=list)
 
@@ -61,6 +61,6 @@ class ClientConfig(BaseModel):
     host_ip: str = ""
     host_port: int = 5757
     api_key: str = ""
-    poll_interval_seconds: int = 10
+    poll_interval_seconds: int = 5
     autostart_with_windows: bool = False
     permanent_devices: list[ClientPermanentDevice] = Field(default_factory=list)
