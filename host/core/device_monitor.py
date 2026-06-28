@@ -93,16 +93,24 @@ class DeviceMonitor(QThread):
             if stale_busid not in current_busids:
                 self._attached_since.pop(stale_busid, None)
 
+        if not usbipd_wrapper.check_port_listening(3240):
+            self._attached_since.clear()
+            return
+
         for dev in current_devices:
             if dev.state == "Attached" and dev.is_permanent:
-                start = self._attached_since.setdefault(dev.busid, now)
-                if (now - start) >= self._stale_threshold and not usbipd_wrapper.check_port_listening(3240):
+                self._attached_since.setdefault(dev.busid, now)
+            else:
+                self._attached_since.pop(dev.busid, None)
+
+        for dev in current_devices:
+            if dev.state == "Attached" and dev.is_permanent:
+                age = now - self._attached_since.get(dev.busid, now)
+                if age >= self._stale_threshold:
                     logger.warning(f"Stale attachment detected for {dev.busid}, forcing rebind")
                     usbipd_wrapper.unbind_device(dev.busid)
                     usbipd_wrapper.bind_device(dev.busid)
                     self._attached_since.pop(dev.busid, None)
-            else:
-                self._attached_since.pop(dev.busid, None)
 
     def _auto_bind_permanent_on_startup(self):
         config = config_manager.load_config()

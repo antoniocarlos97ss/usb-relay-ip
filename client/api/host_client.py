@@ -115,3 +115,7 @@ class HostApiClient:
     def unbind_device(self, busid: str) -> bool:
         data = self._request("POST", f"/devices/{busid}/unbind")
         return data is not None
+
+    def reset_device(self, busid: str) -> bool:
+        data = self._request("POST", f"/devices/{busid}/reset")
+        return data is not None

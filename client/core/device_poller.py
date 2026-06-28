@@ -28,7 +28,8 @@ class DevicePoller(QThread):
         self._poll_interval = max(1, seconds)
 
     def update_attached_busids(self, busids: set[str]) -> None:
-        self._known_attached_busids = set(busids)
+        with self._lock:
+            self._known_attached_busids = set(busids)
 
     def refresh_now(self):
         self._refresh_now = True
@@ -44,7 +45,8 @@ class DevicePoller(QThread):
 
             if connected and self._known_attached_busids:
                 attached_now = {d.busid for d in usbip_wrapper.list_attached()}
-                for busid in list(self._known_attached_busids):
+                known_snapshot = set(self._known_attached_busids)
+                for busid in list(known_snapshot):
                     if busid not in attached_now:
                         self.session_lost.emit(busid)
                         self._known_attached_busids.discard(busid)
