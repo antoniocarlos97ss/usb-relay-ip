@@ -21,7 +21,9 @@ class DeviceMonitor(QThread):
         self._running = False
         self._previous_devices: list[UsbDevice] = []
         self._attached_since: dict[str, float] = {}
+        self._last_rebind: dict[str, float] = {}
         self._stale_threshold: float = 15.0
+        self._rebind_cooldown: float = 300.0
 
     def run(self):
         self._running = True
@@ -93,6 +95,10 @@ class DeviceMonitor(QThread):
             if stale_busid not in current_busids:
                 self._attached_since.pop(stale_busid, None)
 
+        for stale_busid in list(self._last_rebind.keys()):
+            if stale_busid not in current_busids:
+                self._last_rebind.pop(stale_busid, None)
+
         if not usbipd_wrapper.check_port_listening(3240):
             self._attached_since.clear()
             return
@@ -105,19 +111,23 @@ class DeviceMonitor(QThread):
                 prev_state = prev.state if prev else None
                 if prev_state != "Attached":
                     self._attached_since[dev.busid] = now
+                    self._last_rebind.setdefault(dev.busid, 0.0)
                 else:
                     self._attached_since.setdefault(dev.busid, now)
             else:
                 self._attached_since.pop(dev.busid, None)
+                self._last_rebind.pop(dev.busid, None)
 
         for dev in current_devices:
             if dev.state == "Attached" and dev.is_permanent:
                 age = now - self._attached_since.get(dev.busid, now)
-                if age >= self._stale_threshold:
+                last = self._last_rebind.get(dev.busid, 0.0)
+                if age >= self._stale_threshold and (now - last) >= self._rebind_cooldown:
                     logger.warning(f"Stale attachment detected for {dev.busid}, forcing rebind")
                     usbipd_wrapper.unbind_device(dev.busid)
                     usbipd_wrapper.bind_device(dev.busid)
                     self._attached_since.pop(dev.busid, None)
+                    self._last_rebind[dev.busid] = now
 
     def _auto_bind_permanent_on_startup(self):
         config = config_manager.load_config()

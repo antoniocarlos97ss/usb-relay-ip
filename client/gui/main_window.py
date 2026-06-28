@@ -198,7 +198,7 @@ class ClientMainWindow(QMainWindow):
             logger.error(f"Attach failed for {busid}: {message}")
             self._tray.show_notification("USBRelay", t("notify.attach_failed", busid=busid, msg=message))
             if busid in self._pending_reset_busids:
-                self._retry_attach_stale(busid, attempts=2)
+                self._retry_attach_stale(busid, attempts=1)
             else:
                 self._retry_attach_stale(busid, attempts=0)
         self._sync_attached_busids()
