@@ -116,7 +116,6 @@ class DeviceMonitor(QThread):
                     self._attached_since.setdefault(dev.busid, now)
             else:
                 self._attached_since.pop(dev.busid, None)
-                self._last_rebind.pop(dev.busid, None)
 
         for dev in current_devices:
             if dev.state == "Attached" and dev.is_permanent:

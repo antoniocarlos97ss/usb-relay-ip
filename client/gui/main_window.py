@@ -52,6 +52,7 @@ class ClientMainWindow(QMainWindow):
         self._workers: list = []
         self._pending_reset_busids: set[str] = set()
         self._attaching_busids: set[str] = set()
+        self._retry_attempts: dict[str, int] = {}
         self._setup_ui()
         self._start_auto_attach()
         self._start_polling()
@@ -142,7 +143,7 @@ class ClientMainWindow(QMainWindow):
         config = config_manager.load_config()
         perm_set = {(p.vid, p.pid) for p in config.permanent_devices if p.auto_attach}
         for dev in devices:
-            if (dev.vid, dev.pid) in perm_set and dev.state == "Shared" and dev.busid not in self._port_map and dev.busid not in self._attaching_busids:
+            if (dev.vid, dev.pid) in perm_set and dev.state == "Shared" and dev.busid not in self._port_map and dev.busid not in self._attaching_busids and dev.busid not in self._pending_reset_busids:
                 self._attach_device(dev.busid)
 
     def _sync_attached_busids(self):
@@ -192,13 +193,15 @@ class ClientMainWindow(QMainWindow):
             if port:
                 self._port_map[busid] = port
             self._pending_reset_busids.discard(busid)
+            self._retry_attempts.pop(busid, None)
             logger.info(f"Device {busid} attached successfully.")
             self._tray.show_notification("USBRelay", t("notify.attached", busid=busid))
         else:
             logger.error(f"Attach failed for {busid}: {message}")
             self._tray.show_notification("USBRelay", t("notify.attach_failed", busid=busid, msg=message))
             if busid in self._pending_reset_busids:
-                self._retry_attach_stale(busid, attempts=1)
+                attempts = self._retry_attempts.get(busid, 0) + 1
+                self._retry_attach_stale(busid, attempts=attempts)
             else:
                 self._retry_attach_stale(busid, attempts=0)
         self._sync_attached_busids()
@@ -208,9 +211,11 @@ class ClientMainWindow(QMainWindow):
         if attempts >= max_attempts:
             logger.warning(f"Recovery failed for stale device {busid} after {attempts} attempts")
             self._pending_reset_busids.discard(busid)
+            self._retry_attempts.pop(busid, None)
             self._poller_refresh()
             return
 
+        self._retry_attempts[busid] = attempts
         logger.info(f"Trying to recover stale device {busid} via host reset (attempt {attempts + 1}/{max_attempts})")
         self._pending_reset_busids.add(busid)
         self._api_client.reset_device(busid)
