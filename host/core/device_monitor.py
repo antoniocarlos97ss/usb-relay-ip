@@ -88,7 +88,6 @@ class DeviceMonitor(QThread):
                 logger.info(f"Device removed: {prev_device.busid}")
 
     def _check_stale_attachments(self, current_devices: list[UsbDevice]) -> None:
-        now = time.time()
         current_busids = {d.busid for d in current_devices}
 
         for stale_busid in list(self._attached_since.keys()):
@@ -101,32 +100,6 @@ class DeviceMonitor(QThread):
 
         if not usbipd_wrapper.check_port_listening(3240):
             self._attached_since.clear()
-            return
-
-        prev_by_busid = {d.busid: d for d in self._previous_devices}
-
-        for dev in current_devices:
-            if dev.state == "Attached" and dev.is_permanent:
-                prev = prev_by_busid.get(dev.busid)
-                prev_state = prev.state if prev else None
-                if prev_state != "Attached":
-                    self._attached_since[dev.busid] = now
-                    self._last_rebind.setdefault(dev.busid, 0.0)
-                else:
-                    self._attached_since.setdefault(dev.busid, now)
-            else:
-                self._attached_since.pop(dev.busid, None)
-
-        for dev in current_devices:
-            if dev.state == "Attached" and dev.is_permanent:
-                age = now - self._attached_since.get(dev.busid, now)
-                last = self._last_rebind.get(dev.busid, 0.0)
-                if age >= self._stale_threshold and (now - last) >= self._rebind_cooldown:
-                    logger.warning(f"Stale attachment detected for {dev.busid}, forcing rebind")
-                    usbipd_wrapper.unbind_device(dev.busid)
-                    usbipd_wrapper.bind_device(dev.busid)
-                    self._attached_since.pop(dev.busid, None)
-                    self._last_rebind[dev.busid] = now
 
     def _auto_bind_permanent_on_startup(self):
         config = config_manager.load_config()
