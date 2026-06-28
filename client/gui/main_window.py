@@ -150,6 +150,9 @@ class ClientMainWindow(QMainWindow):
             self._poller.update_attached_busids(set(self._port_map.keys()))
 
     def _on_session_lost(self, busid: str):
+        if busid in self._pending_reset_busids or busid in self._attaching_busids:
+            logger.info(f"Recovery already in progress for {busid}")
+            return
         logger.warning(f"Local session lost for {busid}, attempting recovery")
         self._retry_attach_stale(busid, attempts=0)
 
@@ -195,11 +198,10 @@ class ClientMainWindow(QMainWindow):
             logger.error(f"Attach failed for {busid}: {message}")
             self._tray.show_notification("USBRelay", t("notify.attach_failed", busid=busid, msg=message))
             if busid in self._pending_reset_busids:
-                self._pending_reset_busids.discard(busid)
-                self._poller_refresh()
+                self._retry_attach_stale(busid, attempts=2)
             else:
                 self._retry_attach_stale(busid, attempts=0)
-        self._poller_refresh()
+        self._sync_attached_busids()
 
     def _retry_attach_stale(self, busid: str, attempts: int = 0):
         max_attempts = 2
@@ -215,6 +217,9 @@ class ClientMainWindow(QMainWindow):
         QTimer.singleShot(2500, lambda: self._do_attach_after_reset(busid, attempts + 1))
 
     def _do_attach_after_reset(self, busid: str, attempts: int):
+        if busid in self._attaching_busids:
+            self._poller_refresh()
+            return
         config = config_manager.load_config()
         self._attaching_busids.add(busid)
         worker = usbip_worker.AttachWorker(config.host_ip, busid)
@@ -241,8 +246,8 @@ class ClientMainWindow(QMainWindow):
             self._tray.show_notification("USBRelay", t("notify.detached", busid=busid))
         else:
             logger.error(f"Detach failed for {busid}: {message}")
-            self._tray.show_notification("USBRelay", t("notify.detach_failed", busid=busid))
-        self._poller_refresh()
+            self._tray.show_notification("USBRelay", t("notify.detach_failed", busid=busid, msg=message))
+        self._sync_attached_busids()
 
     def _toggle_permanent(self, busid: str, make_permanent: bool):
         device = self._find_device_in_cache(busid)

@@ -97,9 +97,16 @@ class DeviceMonitor(QThread):
             self._attached_since.clear()
             return
 
+        prev_by_busid = {d.busid: d for d in self._previous_devices}
+
         for dev in current_devices:
             if dev.state == "Attached" and dev.is_permanent:
-                self._attached_since.setdefault(dev.busid, now)
+                prev = prev_by_busid.get(dev.busid)
+                prev_state = prev.state if prev else None
+                if prev_state != "Attached":
+                    self._attached_since[dev.busid] = now
+                else:
+                    self._attached_since.setdefault(dev.busid, now)
             else:
                 self._attached_since.pop(dev.busid, None)
 
