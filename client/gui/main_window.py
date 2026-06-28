@@ -155,6 +155,10 @@ class ClientMainWindow(QMainWindow):
             logger.info(f"Recovery already in progress for {busid}")
             return
         logger.warning(f"Local session lost for {busid}, attempting recovery")
+        self._tray.show_notification(
+            "USBRelay",
+            f"Session lost for {busid}, attempting recovery",
+        )
         self._retry_attach_stale(busid, attempts=0)
 
     def _on_connection_changed(self, connected: bool, host: str):

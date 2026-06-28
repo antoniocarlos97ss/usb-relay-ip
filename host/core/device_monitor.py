@@ -20,10 +20,6 @@ class DeviceMonitor(QThread):
         self._poll_interval = poll_interval
         self._running = False
         self._previous_devices: list[UsbDevice] = []
-        self._attached_since: dict[str, float] = {}
-        self._last_rebind: dict[str, float] = {}
-        self._stale_threshold: float = 15.0
-        self._rebind_cooldown: float = 300.0
 
     def run(self):
         self._running = True
@@ -40,7 +36,6 @@ class DeviceMonitor(QThread):
                     self.devices_changed.emit(current_devices)
                     self._handle_new_devices(current_devices)
 
-                self._check_stale_attachments(current_devices)
                 self._previous_devices = current_devices
             except Exception as exc:
                 logger.error(f"Error in device monitor: {exc}")
@@ -86,20 +81,6 @@ class DeviceMonitor(QThread):
             if prev_device.busid not in curr_ids:
                 self.device_unplugged.emit(prev_device.busid)
                 logger.info(f"Device removed: {prev_device.busid}")
-
-    def _check_stale_attachments(self, current_devices: list[UsbDevice]) -> None:
-        current_busids = {d.busid for d in current_devices}
-
-        for stale_busid in list(self._attached_since.keys()):
-            if stale_busid not in current_busids:
-                self._attached_since.pop(stale_busid, None)
-
-        for stale_busid in list(self._last_rebind.keys()):
-            if stale_busid not in current_busids:
-                self._last_rebind.pop(stale_busid, None)
-
-        if not usbipd_wrapper.check_port_listening(3240):
-            self._attached_since.clear()
 
     def _auto_bind_permanent_on_startup(self):
         config = config_manager.load_config()
