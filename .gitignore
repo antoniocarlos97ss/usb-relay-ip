@@ -1,16 +1,32 @@
-dist/
-build/
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Build artifacts
+dist/
+build/*.spec
 *.spec
-*.pkg
-*.pyz
-*.toc
-*.pyo
-.pytest_cache/
-*.egg-info/
-*.log
+build/USBRelayClient/
+build/USBRelayHost/
+
+# Downloaded installers (fetched at build time)
+usbipd-install/
+
+# rcedit downloaded at build time
+rcedit.exe
+
+# Installer temp
+*.exe
+
+# Virtual environment
+.venv/
+.venv-build/
+
+# IDE
 .vscode/
 .idea/
-usbipd-install/
-client/bin/
+
+# OS
+Thumbs.db
+.DS_Store
