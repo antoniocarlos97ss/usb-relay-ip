@@ -38,14 +38,16 @@ def setup_logging():
 
 
 def _emergency_cleanup():
-    """Last-resort: kill all usbipd.exe processes on abnormal exit."""
+    """Cleanup usbipd subprocesses owned by this process on exit.
+
+    Uses kill_all_subprocesses() which only terminates the Popen processes
+    registered by this instance — NOT all usbipd.exe on the system.
+    This ensures the headless daemon (Session 0) is not affected when
+    the GUI process exits (logoff, shutdown, etc.).
+    """
     try:
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "usbipd.exe"],
-            capture_output=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        from host.core.usbipd_wrapper import kill_all_subprocesses
+        kill_all_subprocesses()
     except Exception:
         pass
 
