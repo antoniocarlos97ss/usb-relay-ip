@@ -42,16 +42,16 @@ Section "USB Relay IP Client" SEC01
     File /r "..\\dist\\USBRelayClient\\*"
 
     ; Install USBip driver (VHCI) only if not already present
-    ReadRegDWORD $0 HKLM "SYSTEM\\CurrentControlSet\\Services\\usbip2_ude" "Type"
+    ReadRegDWORD $0 HKLM "SYSTEM\CurrentControlSet\Services\usbip2_ude" "Type"
     ${If} ${Errors}
-        FindFirst $1 $2 "$INSTDIR\\_internal\\usbipd-install\\USBip\\USBip*.exe"
+        FindFirst $1 $2 "$INSTDIR\_internal\usbipd-install\USBip*.exe"
         ${If} $2 != ""
             DetailPrint "Instalando driver USBip (VHCI)..."
-            ExecWait '"$INSTDIR\\_internal\\usbipd-install\\USBip\\$2" /VERYSILENT /COMPONENTS=main,client /SUPPRESSMSGBOXES /NORESTART /SP-' $3
+            ExecWait '"$INSTDIR\_internal\usbipd-install\$2" /VERYSILENT /COMPONENTS=main,client /SUPPRESSMSGBOXES /NORESTART /SP-' $3
             DetailPrint "USBip driver install exit code: $3"
-            DeleteRegKey HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{199505b0-b93d-4521-a8c7-897818e0205a}_is1"
+            DeleteRegKey HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{199505b0-b93d-4521-a8c7-897818e0205a}_is1"
         ${Else}
-            DetailPrint "Instalador USBip nao encontrado em $INSTDIR\\_internal\\usbipd-install\\USBip"
+            DetailPrint "Instalador USBip nao encontrado em $INSTDIR\_internal\usbipd-install"
         ${EndIf}
         FindClose $1
     ${Else}
