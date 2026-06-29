@@ -39,7 +39,7 @@ class ClientMainWindow(QMainWindow):
         self._tray = tray_icon
         self._port_map: dict[str, int] = {}
         self._shutting_down = False
-        self._service_ok: bool | None = None  # Unknown until first service signal
+        self._service_ok: bool = True  # Optimistic until first health check
 
         config = config_manager.load_config()
         self._api_client = HostApiClient(
@@ -212,10 +212,14 @@ class ClientMainWindow(QMainWindow):
     def _retry_attach_stale(self, busid: str):
         logger.info(f"Trying to recover stale device {busid} via host unbind+rebind")
         self._api_client.unbind_device(busid)
-        import time
-        time.sleep(2)
+        # Use QTimer to avoid blocking the GUI thread
+        QTimer.singleShot(2000, lambda: self._retry_do_bind(busid))
+
+    def _retry_do_bind(self, busid: str):
         self._api_client.bind_device(busid)
-        time.sleep(2)
+        QTimer.singleShot(2000, lambda: self._retry_do_attach(busid))
+
+    def _retry_do_attach(self, busid: str):
         config = config_manager.load_config()
         worker = usbip_worker.AttachWorker(config.host_ip, busid)
         worker.finished.connect(self._on_attach_finished)

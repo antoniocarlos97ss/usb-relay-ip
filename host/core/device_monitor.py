@@ -71,7 +71,9 @@ class DeviceMonitor(QThread):
         return any(prev_states.get(d.busid) != d.state for d in current_devices)
 
     def _handle_new_devices(self, current_devices: list[UsbDevice]):
-        self._failed_auto_share_busids.clear()
+        # Remove from failed set only busids that are no longer present
+        curr_ids = {d.busid for d in current_devices}
+        self._failed_auto_share_busids.intersection_update(curr_ids)
         prev_ids = {d.busid for d in self._previous_devices}
         for device in current_devices:
             if device.busid not in prev_ids:

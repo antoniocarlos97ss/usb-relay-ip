@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Optional
 import os
 import re
 import shutil
@@ -45,6 +46,38 @@ def kill_all_subprocesses():
         )
     except Exception:
         pass
+
+
+def get_service_state() -> str:
+    """Check the current state of usbipd.
+
+    Since the app manages usbipd as a child process rather than a Windows service,
+    this reports the real health by checking port 3240 first, then falling back
+    to the Windows service status as supplementary info.
+
+    Returns one of: 'RUNNING', 'STOPPED', 'NOT_INSTALLED', or 'UNKNOWN'.
+    """
+    if check_port_listening(3240):
+        return "RUNNING"
+    try:
+        proc = subprocess.run(
+            ["sc", "query", "usbipd"],
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if "FAILED 1060" in output or "specified service does not exist" in output.lower():
+            return "NOT_INSTALLED"
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("STATE"):
+                parts = line.split()
+                if len(parts) >= 3:
+                    return parts[-1].upper()
+        return "UNKNOWN"
+    except Exception as exc:
+        logger.warning(f"Failed to query usbipd service state: {exc}")
+        return "UNKNOWN"
 
 
 def _find_usbipd() -> Optional[str]:
