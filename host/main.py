@@ -54,18 +54,20 @@ atexit.register(_emergency_cleanup)
 
 
 def _ensure_usbipd(parent=None) -> bool:
+    logger = logging.getLogger(__name__)
     from host.core import usbipd_wrapper
 
     if usbipd_wrapper.is_available():
         success, msg = usbipd_wrapper.ensure_service_running()
         if not success:
-            logger.warning(f"usbipd is installed but service check failed: {msg}")
+            logger.warning(f"usbipd service could not be started: {msg}")
             if "--headless" not in sys.argv:
-                QMessageBox.warning(
+                QMessageBox.critical(
                     parent,
-                    t("usbipd_service.warning_title"),
-                    f"{t('usbipd_service.warning_text')}\n\n{msg}",
+                    t("usbipd_service.error_title"),
+                    t("usbipd_service.error_text", msg=msg),
                 )
+            return False
         return True
 
     reply = QMessageBox.question(
@@ -131,6 +133,18 @@ def run_headless_host():
     from host.api.server import start_server
 
     config = config_manager.load_config()
+
+    # Ensure usbipd service is running before anything else
+    if usbipd_wrapper.is_available():
+        svc_ok, svc_msg = usbipd_wrapper.ensure_service_running()
+        if not svc_ok:
+            logger.error(f"[headless] Cannot start usbipd service: {svc_msg}")
+            # Continue anyway — API should still start so the client gets a clear
+            # health response (status=error) instead of a connection refused.
+        else:
+            logger.info("[headless] usbipd service OK")
+    else:
+        logger.error("[headless] usbipd-win not installed — cannot function")
 
     # Start FastAPI server first so Client VMs can connect while binding
     start_server(host="0.0.0.0", port=config.api_port)

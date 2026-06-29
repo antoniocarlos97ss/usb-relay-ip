@@ -172,3 +172,29 @@ def update_autostart(enabled: bool) -> tuple[bool, bool]:
         from .autostart_manager import unregister_startup
         unregister_startup()
         return True, True
+
+
+def update_auto_share_all(enabled: bool) -> None:
+    config = load_config()
+    config.auto_share_all = enabled
+    save_config(config)
+
+
+def add_auto_share_exclusion(vid: str, pid: str) -> None:
+    config = load_config()
+    key = f"{vid.lower()}:{pid.lower()}"
+    if key not in config.auto_share_exclude:
+        config.auto_share_exclude.append(key)
+        save_config(config)
+
+
+def remove_auto_share_exclusion(vid: str, pid: str) -> None:
+    config = load_config()
+    key = f"{vid.lower()}:{pid.lower()}"
+    config.auto_share_exclude = [e for e in config.auto_share_exclude if e != key]
+    save_config(config)
+
+
+def is_auto_share_excluded(vid: str, pid: str) -> bool:
+    config = load_config()
+    return f"{vid.lower()}:{pid.lower()}" in config.auto_share_exclude

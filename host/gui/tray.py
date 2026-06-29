@@ -12,7 +12,12 @@ def _make_icon(color: str) -> QIcon:
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setBrush(Qt.GlobalColor.white)
     painter.drawEllipse(2, 2, 28, 28)
-    painter.setBrush(Qt.GlobalColor.gray if color == "gray" else Qt.GlobalColor.darkGreen)
+    if color == "gray":
+        painter.setBrush(Qt.GlobalColor.gray)
+    elif color == "red":
+        painter.setBrush(Qt.GlobalColor.red)
+    else:
+        painter.setBrush(Qt.GlobalColor.darkGreen)
     painter.drawEllipse(5, 5, 22, 22)
     painter.end()
     return QIcon(pixmap)
@@ -35,6 +40,7 @@ class TrayIcon(QSystemTrayIcon):
         super().__init__(parent)
         self._default_icon = _load_icon(icon_path, "gray") if icon_path else _make_icon("gray")
         self._connected_icon = _load_icon(connected_icon_path, "green") if connected_icon_path else _make_icon("green")
+        self._warning_icon = _make_icon("red")
 
         self.setIcon(self._default_icon)
         self.setToolTip("USB Relay IP Host")
@@ -73,6 +79,11 @@ class TrayIcon(QSystemTrayIcon):
         else:
             self.setIcon(self._default_icon)
             self._status_action.setText(t("tray.api_stopped"))
+
+    def set_service_down_state(self):
+        """Show a warning state: API is running but usbipd service is down."""
+        self.setIcon(self._warning_icon)
+        self._status_action.setText(t("tray.service_down"))
 
     def show_notification(self, title: str, message: str):
         self.showMessage(title, message, QIcon(), 3000)

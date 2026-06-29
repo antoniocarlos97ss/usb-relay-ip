@@ -39,6 +39,7 @@ class ClientMainWindow(QMainWindow):
         self._tray = tray_icon
         self._port_map: dict[str, int] = {}
         self._shutting_down = False
+        self._service_ok: bool = True  # Optimistic until first health check
 
         config = config_manager.load_config()
         self._api_client = HostApiClient(
@@ -121,6 +122,7 @@ class ClientMainWindow(QMainWindow):
         )
         self._poller.devices_fetched.connect(self._on_devices_fetched)
         self._poller.connection_changed.connect(self._on_connection_changed)
+        self._poller.service_status_changed.connect(self._on_service_status_changed)
         self._poller.start()
 
     def _restart_poller(self):
@@ -136,13 +138,50 @@ class ClientMainWindow(QMainWindow):
     def _on_connection_changed(self, connected: bool, host: str):
         if connected:
             config = config_manager.load_config()
-            self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
-            self._tray.set_connected_state(True, config.host_ip)
+            if self._service_ok:
+                self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
+                self._tray.set_connected_state(True, config.host_ip)
+            else:
+                self._status_label.setText(t("status.host_service_down"))
+                self._tray.set_connected_state(False)
         else:
             self._status_label.setText(t("status.offline_retry"))
             self._tray.set_connected_state(False)
 
+    def _on_service_status_changed(self, service_ok: bool):
+        old = self._service_ok
+        self._service_ok = service_ok
+
+        if old is None:
+            logger.info(f"Host usbipd service initial state: {service_ok}")
+        elif old != service_ok:
+            logger.info(f"Host usbipd service status changed: {old} -> {service_ok}")
+
+        if service_ok:
+            self._attach_btn.setEnabled(True)
+            self._always_btn.setEnabled(True)
+            if old is False:
+                self._tray.show_notification("USBRelay", t("notify.host_service_recovered"))
+        else:
+            self._attach_btn.setEnabled(False)
+            self._always_btn.setEnabled(False)
+            if old is not False:
+                self._tray.show_notification("USBRelay", t("notify.host_service_down"))
+
+        # Refresh status bar
+        connected = self._api_client.is_connected()
+        if connected:
+            config = config_manager.load_config()
+            if service_ok:
+                self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
+            else:
+                self._status_label.setText(t("status.host_service_down"))
+
     def _attach_device(self, busid: str):
+        if not self._service_ok:
+            logger.warning(f"Cannot attach {busid}: host usbipd service is down")
+            self._tray.show_notification("USBRelay", t("notify.attach_failed_service_down", busid=busid))
+            return
         config = config_manager.load_config()
         logger.info(f"Attaching device {busid} from {config.host_ip}")
         worker = usbip_worker.AttachWorker(config.host_ip, busid)
@@ -173,10 +212,14 @@ class ClientMainWindow(QMainWindow):
     def _retry_attach_stale(self, busid: str):
         logger.info(f"Trying to recover stale device {busid} via host unbind+rebind")
         self._api_client.unbind_device(busid)
-        import time
-        time.sleep(2)
+        # Use QTimer to avoid blocking the GUI thread
+        QTimer.singleShot(2000, lambda: self._retry_do_bind(busid))
+
+    def _retry_do_bind(self, busid: str):
         self._api_client.bind_device(busid)
-        time.sleep(2)
+        QTimer.singleShot(2000, lambda: self._retry_do_attach(busid))
+
+    def _retry_do_attach(self, busid: str):
         config = config_manager.load_config()
         worker = usbip_worker.AttachWorker(config.host_ip, busid)
         worker.finished.connect(self._on_attach_finished)
@@ -373,6 +416,7 @@ class ClientMainWindow(QMainWindow):
         if hasattr(self, "_poller") and self._poller:
             self._poller.devices_fetched.disconnect()
             self._poller.connection_changed.disconnect()
+            self._poller.service_status_changed.disconnect()
             self._poller.stop()
             self._poller.wait(3000)
             self._poller = None
