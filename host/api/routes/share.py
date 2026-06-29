@@ -1,5 +1,3 @@
-import time
-
 from fastapi import APIRouter, Request
 
 from host.core import config_manager, usbipd_wrapper
@@ -26,14 +24,6 @@ def bind_device(busid: str, request: Request):
 @router.post("/devices/{busid}/unbind")
 def unbind_device(busid: str, request: Request):
     result = usbipd_wrapper.unbind_device(busid)
-    return result.model_dump()
-
-
-@router.post("/devices/{busid}/reset")
-def reset_device(busid: str):
-    usbipd_wrapper.unbind_device(busid)
-    time.sleep(1)
-    result = usbipd_wrapper.bind_device(busid)
     return result.model_dump()
 
 
@@ -76,4 +66,12 @@ def get_config(request: Request):
         "poll_interval_seconds": config.poll_interval_seconds,
         "autostart_as_service": config.autostart_as_service,
         "permanent_devices_count": len(config.permanent_devices),
+        "auto_share_all": config.auto_share_all,
+        "auto_share_exclude": config.auto_share_exclude,
     }
+
+
+@router.post("/config/auto-share")
+def set_auto_share(request: Request, enabled: bool):
+    config_manager.update_auto_share_all(enabled)
+    return {"success": True, "auto_share_all": enabled}

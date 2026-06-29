@@ -39,6 +39,7 @@ class ClientMainWindow(QMainWindow):
         self._tray = tray_icon
         self._port_map: dict[str, int] = {}
         self._shutting_down = False
+        self._service_ok: bool | None = None  # Unknown until first service signal
 
         config = config_manager.load_config()
         self._api_client = HostApiClient(
@@ -50,9 +51,6 @@ class ClientMainWindow(QMainWindow):
         self.setWindowTitle(t("client.title"))
         self.setMinimumSize(700, 450)
         self._workers: list = []
-        self._pending_reset_busids: set[str] = set()
-        self._attaching_busids: set[str] = set()
-        self._retry_attempts: dict[str, int] = {}
         self._setup_ui()
         self._start_auto_attach()
         self._start_polling()
@@ -124,7 +122,7 @@ class ClientMainWindow(QMainWindow):
         )
         self._poller.devices_fetched.connect(self._on_devices_fetched)
         self._poller.connection_changed.connect(self._on_connection_changed)
-        self._poller.session_lost.connect(self._on_session_lost)
+        self._poller.service_status_changed.connect(self._on_service_status_changed)
         self._poller.start()
 
     def _restart_poller(self):
@@ -136,48 +134,56 @@ class ClientMainWindow(QMainWindow):
         for device in devices:
             device.is_permanent = config_manager.is_permanent(device.vid, device.pid)
         self._device_table.update_devices(devices)
-        self._sync_attached_busids()
-        self._auto_reattach_permanent(devices)
-
-    def _auto_reattach_permanent(self, devices):
-        config = config_manager.load_config()
-        perm_set = {(p.vid, p.pid) for p in config.permanent_devices if p.auto_attach}
-        for dev in devices:
-            if (dev.vid, dev.pid) in perm_set and dev.state == "Shared" and dev.busid not in self._port_map and dev.busid not in self._attaching_busids and dev.busid not in self._pending_reset_busids:
-                self._attach_device(dev.busid)
-
-    def _sync_attached_busids(self):
-        if hasattr(self, "_poller") and self._poller:
-            self._poller.update_attached_busids(set(self._port_map.keys()))
-
-    def _on_session_lost(self, busid: str):
-        if busid in self._pending_reset_busids or busid in self._attaching_busids:
-            logger.info(f"Recovery already in progress for {busid}")
-            return
-        logger.warning(f"Local session lost for {busid}, attempting recovery")
-        self._tray.show_notification(
-            "USBRelay",
-            f"Session lost for {busid}, attempting recovery",
-        )
-        self._retry_attach_stale(busid, attempts=0)
 
     def _on_connection_changed(self, connected: bool, host: str):
         if connected:
             config = config_manager.load_config()
-            self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
-            self._tray.set_connected_state(True, config.host_ip)
+            if self._service_ok:
+                self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
+                self._tray.set_connected_state(True, config.host_ip)
+            else:
+                self._status_label.setText(t("status.host_service_down"))
+                self._tray.set_connected_state(True, config.host_ip)
         else:
             self._status_label.setText(t("status.offline_retry"))
             self._tray.set_connected_state(False)
-        self._sync_attached_busids()
+
+    def _on_service_status_changed(self, service_ok: bool):
+        old = self._service_ok
+        self._service_ok = service_ok
+
+        if old is None:
+            logger.info(f"Host usbipd service initial state: {service_ok}")
+        elif old != service_ok:
+            logger.info(f"Host usbipd service status changed: {old} -> {service_ok}")
+
+        if service_ok:
+            self._attach_btn.setEnabled(True)
+            self._always_btn.setEnabled(True)
+            if old is False:
+                self._tray.show_notification("USBRelay", t("notify.host_service_recovered"))
+        else:
+            self._attach_btn.setEnabled(False)
+            self._always_btn.setEnabled(False)
+            if old is not False:
+                self._tray.show_notification("USBRelay", t("notify.host_service_down"))
+
+        # Refresh status bar
+        connected = self._api_client.is_connected()
+        if connected:
+            config = config_manager.load_config()
+            if service_ok:
+                self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
+            else:
+                self._status_label.setText(t("status.host_service_down"))
 
     def _attach_device(self, busid: str):
-        if busid in self._attaching_busids:
-            logger.info(f"Attach already in progress for {busid}")
+        if not self._service_ok:
+            logger.warning(f"Cannot attach {busid}: host usbipd service is down")
+            self._tray.show_notification("USBRelay", t("notify.attach_failed_service_down", busid=busid))
             return
         config = config_manager.load_config()
         logger.info(f"Attaching device {busid} from {config.host_ip}")
-        self._attaching_busids.add(busid)
         worker = usbip_worker.AttachWorker(config.host_ip, busid)
         worker.finished.connect(self._on_attach_finished)
         worker.finished.connect(worker.deleteLater)
@@ -192,52 +198,31 @@ class ClientMainWindow(QMainWindow):
             pass
 
     def _on_attach_finished(self, success: bool, message: str, busid: str, port: int = 0):
-        self._attaching_busids.discard(busid)
         if success:
             if port:
                 self._port_map[busid] = port
-            self._pending_reset_busids.discard(busid)
-            self._retry_attempts.pop(busid, None)
             logger.info(f"Device {busid} attached successfully.")
             self._tray.show_notification("USBRelay", t("notify.attached", busid=busid))
         else:
             logger.error(f"Attach failed for {busid}: {message}")
             self._tray.show_notification("USBRelay", t("notify.attach_failed", busid=busid, msg=message))
-            if busid in self._pending_reset_busids:
-                attempts = self._retry_attempts.get(busid, 0) + 1
-                self._retry_attach_stale(busid, attempts=attempts)
-            else:
-                self._retry_attach_stale(busid, attempts=0)
-        self._sync_attached_busids()
+            self._retry_attach_stale(busid)
+        self._poller_refresh()
 
-    def _retry_attach_stale(self, busid: str, attempts: int = 0):
-        max_attempts = 2
-        if attempts >= max_attempts:
-            logger.warning(f"Recovery failed for stale device {busid} after {attempts} attempts")
-            self._pending_reset_busids.discard(busid)
-            self._retry_attempts.pop(busid, None)
-            self._poller_refresh()
-            return
-
-        self._retry_attempts[busid] = attempts
-        logger.info(f"Trying to recover stale device {busid} via host reset (attempt {attempts + 1}/{max_attempts})")
-        self._pending_reset_busids.add(busid)
-        self._api_client.reset_device(busid)
-        QTimer.singleShot(2500, lambda: self._do_attach_after_reset(busid, attempts + 1))
-
-    def _do_attach_after_reset(self, busid: str, attempts: int):
-        if busid in self._attaching_busids:
-            self._poller_refresh()
-            return
+    def _retry_attach_stale(self, busid: str):
+        logger.info(f"Trying to recover stale device {busid} via host unbind+rebind")
+        self._api_client.unbind_device(busid)
+        import time
+        time.sleep(2)
+        self._api_client.bind_device(busid)
+        time.sleep(2)
         config = config_manager.load_config()
-        self._attaching_busids.add(busid)
         worker = usbip_worker.AttachWorker(config.host_ip, busid)
         worker.finished.connect(self._on_attach_finished)
         worker.finished.connect(worker.deleteLater)
         worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
         self._workers.append(worker)
         worker.start()
-        self._poller_refresh()
 
     def _detach_device(self, busid: str):
         logger.info(f"Detaching device {busid}")
@@ -256,7 +241,7 @@ class ClientMainWindow(QMainWindow):
         else:
             logger.error(f"Detach failed for {busid}: {message}")
             self._tray.show_notification("USBRelay", t("notify.detach_failed", busid=busid, msg=message))
-        self._sync_attached_busids()
+        self._poller_refresh()
 
     def _toggle_permanent(self, busid: str, make_permanent: bool):
         device = self._find_device_in_cache(busid)
@@ -427,7 +412,7 @@ class ClientMainWindow(QMainWindow):
         if hasattr(self, "_poller") and self._poller:
             self._poller.devices_fetched.disconnect()
             self._poller.connection_changed.disconnect()
-            self._poller.session_lost.disconnect()
+            self._poller.service_status_changed.disconnect()
             self._poller.stop()
             self._poller.wait(3000)
             self._poller = None

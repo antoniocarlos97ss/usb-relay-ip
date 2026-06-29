@@ -32,6 +32,7 @@ def kill_all_subprocesses():
     for proc in list(_subprocesses):
         try:
             proc.kill()
+            proc.wait(timeout=2)
         except Exception:
             pass
     _subprocesses.clear()
@@ -47,6 +48,12 @@ def kill_all_subprocesses():
 
 
 def _find_usbipd() -> Optional[str]:
+    # Check bundled path first (PyInstaller — usbipd.exe bundled alongside the app)
+    if getattr(sys, "frozen", False):
+        bundled = os.path.join(sys._MEIPASS, "usbipd-win", f"{USBIPD_EXE}.exe")
+        if os.path.exists(bundled):
+            return bundled
+
     found = shutil.which(USBIPD_EXE)
     if found:
         return found
@@ -261,37 +268,56 @@ def check_port_listening(port: int = 3240) -> bool:
 
 
 def ensure_service_running() -> tuple[bool, str]:
-    """Ensure that the usbipd service is running and listening on port 3240."""
+    '''Ensure that the usbipd server is running and listening on port 3240.
+
+    Instead of relying on the Windows service (which is disabled by the installer),
+    this launches usbipd.exe server as a managed child process. The process is
+    registered in _subprocesses and automatically cleaned up when the app exits.
+    '''
     if check_port_listening(3240):
-        return True, "Service is listening on port 3240."
+        return True, 'Server is listening on port 3240.'
 
-    logger.info("usbipd service is not listening. Attempting to start it...")
+    logger.info('usbipd server is not listening. Attempting to start it as child process...')
+    exe_path = _find_usbipd()
+    if not exe_path:
+        return False, f'{USBIPD_EXE} nao encontrado. Execute o instalador primeiro.'
+
     try:
-        # Check service status first using sc
-        query_proc = subprocess.run(
-            ["sc", "query", "usbipd"],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        # Capture stderr to a log file for diagnostics
+        log_path = os.path.join(
+            os.environ.get("TEMP", "C:\\Temp"),
+            "usbipd_server.log"
         )
-        if "FAILED" in query_proc.stderr or "1060" in query_proc.stderr or "1060" in query_proc.stdout:
-            return False, "usbipd Windows Service is not installed."
+        with open(log_path, "a") as log_file:
+            proc = subprocess.Popen(
+                [exe_path, "server"],
+                stdout=subprocess.DEVNULL,
+                stderr=log_file,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+        _register_proc(proc)
 
-        # Start service
-        start_proc = subprocess.run(
-            ["sc", "start", "usbipd"],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        )
-        
-        # Wait a bit for the service to bind port 3240
-        for _ in range(6):
+        # Wait for the server to bind port 3240
+        for _ in range(12):  # 12 x 0.5s = 6s timeout
             time.sleep(0.5)
             if check_port_listening(3240):
-                return True, "Service started and is listening on port 3240."
+                return True, "usbipd server started and is listening on port 3240."
+            # Detect premature exit (e.g. missing .NET runtime, permission denied)
+            if proc.poll() is not None:
+                _unregister_proc(proc)
+                return (
+                    False,
+                    f"usbipd server encerrou prematuramente "
+                    f"(código {proc.returncode})."
+                    f" Verifique {log_path} para detalhes."
+                )
 
-        detail = f"Stdout: {start_proc.stdout.strip()} Stderr: {start_proc.stderr.strip()}"
-        return False, f"Attempted to start service, but port 3240 is still not listening. {detail}"
+        # Timed out -- kill the process so we don't leave orphans
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        _unregister_proc(proc)
+        return False, 'usbipd server foi iniciado mas a porta 3240 nao esta respondendo.'
     except Exception as exc:
-        return False, f"Failed to manage usbipd service: {exc}"
+        return False, f'Falha ao iniciar usbipd server: {exc}'

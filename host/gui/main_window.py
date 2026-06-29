@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
-from host.core import config_manager, device_monitor, usbipd_wrapper
+from host.core import config_manager, device_monitor, service_monitor, usbipd_wrapper
 from host.gui.device_table import DeviceTable
 from host.gui.log_viewer import LogViewer
 from host.gui.settings_dialog import SettingsDialog
@@ -23,6 +23,9 @@ class HostMainWindow(QMainWindow):
         super().__init__()
         self._tray = tray_icon
         self._monitor: device_monitor.DeviceMonitor | None = None
+        self._service_monitor: service_monitor.ServiceMonitor | None = None
+        self._service_healthy = True
+        self._api_port: int = 0
 
         self.setWindowTitle(t("host.title"))
         self.setMinimumSize(700, 450)
@@ -80,7 +83,17 @@ class HostMainWindow(QMainWindow):
         )
         self._monitor.devices_changed.connect(self._on_devices_changed)
         self._monitor.device_auto_bound.connect(self._on_device_auto_bound)
+        self._monitor.device_auto_shared.connect(self._on_device_auto_shared)
         self._monitor.start()
+
+        # Start the service health monitor (checks port 3240 every N seconds)
+        self._service_monitor = service_monitor.ServiceMonitor(
+            poll_interval=config.poll_interval_seconds,
+        )
+        self._service_monitor.service_down.connect(self._on_service_down)
+        self._service_monitor.service_recovered.connect(self._on_service_recovered)
+        self._service_monitor.service_error.connect(self._on_service_error)
+        self._service_monitor.start()
 
         QTimer.singleShot(500, self._refresh_devices)
 
@@ -164,10 +177,53 @@ class HostMainWindow(QMainWindow):
     def _on_device_auto_bound(self, busid: str, description: str):
         self._tray.show_notification("USBRelay", t("notify.auto_bound", busid=busid, desc=description))
 
+    def _on_device_auto_shared(self, busid: str, description: str):
+        self._tray.show_notification("USBRelay", t("notify.auto_share_bound", busid=busid, desc=description))
+
+    # --- Service monitor handlers ---
+
+    def _on_service_down(self):
+        self._service_healthy = False
+        self._update_status()
+        self._tray.show_notification("USBRelay", t("notify.service_down"))
+        logger.warning("usbipd service went DOWN")
+
+    def _on_service_recovered(self):
+        self._service_healthy = True
+        self._update_status()
+        self._tray.show_notification("USBRelay", t("notify.service_recovered"))
+        logger.info("usbipd service recovered")
+
+    def _on_service_error(self, msg: str):
+        logger.error(f"Service monitor recovery failed: {msg}")
+        self._tray.show_notification("USBRelay", t("notify.service_error", msg=msg))
+
+    def _update_status(self):
+        """Update status bar and tray icon based on current state."""
+        if self._api_port > 0:
+            if self._service_healthy:
+                self._status_label.setText(t("status.api_running", port=self._api_port))
+                self._tray.set_connected_state(True)
+            else:
+                self._status_label.setText(t("status.api_service_down", port=self._api_port))
+                self._tray.set_service_down_state()
+        else:
+            # API port not yet known (startup). Set tray to warning state.
+            if self._service_healthy:
+                self._status_label.setText(t("status.api_starting"))
+            else:
+                self._status_label.setText(t("status.api_service_down", port="?"))
+                self._tray.set_service_down_state()
+
     def set_api_status(self, running: bool, port: int):
+        self._api_port = port
         if running:
-            self._status_label.setText(t("status.api_running", port=port))
-            self._tray.set_connected_state(True)
+            if self._service_healthy:
+                self._status_label.setText(t("status.api_running", port=port))
+                self._tray.set_connected_state(True)
+            else:
+                self._status_label.setText(t("status.api_service_down", port=port))
+                self._tray.set_service_down_state()
         else:
             self._status_label.setText(t("status.api_stopped"))
             self._tray.set_connected_state(False)
@@ -180,6 +236,8 @@ class HostMainWindow(QMainWindow):
     def quit_app(self):
         if self._monitor:
             self._monitor.stop()
+        if self._service_monitor:
+            self._service_monitor.stop()
         self._tray.hide()
 
     def force_cleanup(self):

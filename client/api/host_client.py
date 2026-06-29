@@ -17,6 +17,7 @@ class HostApiClient:
         self._host_port = host_port
         self._api_key = api_key
         self._connected = False
+        self._usbipd_listening = False  # Unknown until first health check
 
     @property
     def host_ip(self) -> str:
@@ -74,6 +75,7 @@ class HostApiClient:
                     return None
         except (httpx.ConnectError, httpx.TimeoutException):
             self._connected = False
+            self._usbipd_listening = False
             return None
         except Exception as exc:
             logger.debug(f"Request error: {exc}")
@@ -98,9 +100,12 @@ class HostApiClient:
     def get_health(self) -> Optional[HealthStatus]:
         data = self._request("GET", "/health")
         if data is None:
+            self._usbipd_listening = False
             return None
         try:
-            return HealthStatus(**data)
+            health = HealthStatus(**data)
+            self._usbipd_listening = health.usbipd_listening
+            return health
         except Exception as exc:
             logger.warning(f"Failed to parse health data: {exc}")
             return None
@@ -114,8 +119,4 @@ class HostApiClient:
 
     def unbind_device(self, busid: str) -> bool:
         data = self._request("POST", f"/devices/{busid}/unbind")
-        return data is not None
-
-    def reset_device(self, busid: str) -> bool:
-        data = self._request("POST", f"/devices/{busid}/reset")
         return data is not None

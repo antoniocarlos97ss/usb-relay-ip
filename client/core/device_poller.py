@@ -5,7 +5,6 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from client.api.host_client import HostApiClient
-from client.core import usbip_wrapper
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +12,7 @@ logger = logging.getLogger(__name__)
 class DevicePoller(QThread):
     devices_fetched = pyqtSignal(list)
     connection_changed = pyqtSignal(bool, str)
-    session_lost = pyqtSignal(str)
+    service_status_changed = pyqtSignal(bool)  # True = service healthy, False = service down
 
     def __init__(self, api_client: HostApiClient, poll_interval: int = 10, parent=None):
         super().__init__(parent)
@@ -22,14 +21,10 @@ class DevicePoller(QThread):
         self._running = False
         self._refresh_now = False
         self._lock = threading.Lock()
-        self._known_attached_busids: set[str] = set()
+        self._last_service_ok = False  # Start unknown; first successful poll sends True
 
     def set_poll_interval(self, seconds: int):
         self._poll_interval = max(1, seconds)
-
-    def update_attached_busids(self, busids: set[str]) -> None:
-        with self._lock:
-            self._known_attached_busids = set(busids)
 
     def refresh_now(self):
         self._refresh_now = True
@@ -38,18 +33,24 @@ class DevicePoller(QThread):
         if not self._lock.acquire(blocking=False):
             return
         try:
+            # Two HTTP calls per cycle: get_devices(), then get_health()
+            # to refresh the host service status (usbipd_listening).
             devices = self._client.get_devices()
             connected = self._client.is_connected()
+
+            # get_health() refreshes the host client's cached _usbipd_listening.
+            service_ok = False
+            if connected:
+                health = self._client.get_health()
+                if health:
+                    service_ok = health.usbipd_listening
+
+            if service_ok != self._last_service_ok:
+                self.service_status_changed.emit(service_ok)
+                self._last_service_ok = service_ok
+
             self.devices_fetched.emit(devices)
             self.connection_changed.emit(connected, self._client.host_ip)
-
-            if connected and self._known_attached_busids:
-                attached_now = {d.busid for d in usbip_wrapper.list_attached()}
-                known_snapshot = set(self._known_attached_busids)
-                for busid in list(known_snapshot):
-                    if busid not in attached_now:
-                        self.session_lost.emit(busid)
-                        self._known_attached_busids.discard(busid)
         except Exception as exc:
             logger.error(f"Poll error: {exc}")
             self.connection_changed.emit(False, "")
