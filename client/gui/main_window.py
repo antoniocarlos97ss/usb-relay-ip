@@ -143,7 +143,7 @@ class ClientMainWindow(QMainWindow):
                 self._tray.set_connected_state(True, config.host_ip)
             else:
                 self._status_label.setText(t("status.host_service_down"))
-                self._tray.set_connected_state(True, config.host_ip)
+                self._tray.set_connected_state(False)
         else:
             self._status_label.setText(t("status.offline_retry"))
             self._tray.set_connected_state(False)

@@ -41,7 +41,7 @@ Section "USB Relay IP Host" SEC01
     SetOutPath "$INSTDIR"
     File /r "..\\dist\\USBRelayHost\\*"
 
-    IfFileExists "$SYSDIR\\usbipd.exe" usbipd_done 0
+    IfFileExists "$PROGRAMFILES64\usbipd-win\usbipd.exe" usbipd_done 0
     FindFirst $0 $1 "$INSTDIR\\_internal\\usbipd-install\\usbipd-win*.msi"
     ${If} $1 != ""
         DetailPrint "Instalando usbipd-win..."

@@ -30,6 +30,9 @@ def _unregister_proc(proc: subprocess.Popen):
 
 
 def kill_all_subprocesses():
+    # Kill only the subprocesses WE registered — do NOT blanket-taskkill
+    # all usbipd.exe processes, as that would kill the headless daemon
+    # running in Session 0 (breaks session resilience).
     for proc in list(_subprocesses):
         try:
             proc.kill()
@@ -37,15 +40,6 @@ def kill_all_subprocesses():
         except Exception:
             pass
     _subprocesses.clear()
-    try:
-        subprocess.run(
-            ["taskkill", "/F", "/IM", f"{USBIPD_EXE}.exe"],
-            capture_output=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-    except Exception:
-        pass
 
 
 def get_service_state() -> str:

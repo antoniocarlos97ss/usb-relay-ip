@@ -84,12 +84,14 @@ class HostMainWindow(QMainWindow):
         self._monitor.devices_changed.connect(self._on_devices_changed)
         self._monitor.device_auto_bound.connect(self._on_device_auto_bound)
         self._monitor.device_auto_shared.connect(self._on_device_auto_shared)
+        self._monitor.device_unplugged.connect(self._on_device_unplugged)
         self._monitor.start()
 
         # Start the service health monitor (checks port 3240 every N seconds)
         self._service_monitor = service_monitor.ServiceMonitor(
             poll_interval=config.poll_interval_seconds,
         )
+        self._service_monitor.service_healthy.connect(self._on_service_healthy)
         self._service_monitor.service_down.connect(self._on_service_down)
         self._service_monitor.service_recovered.connect(self._on_service_recovered)
         self._service_monitor.service_error.connect(self._on_service_error)
@@ -180,7 +182,15 @@ class HostMainWindow(QMainWindow):
     def _on_device_auto_shared(self, busid: str, description: str):
         self._tray.show_notification("USBRelay", t("notify.auto_share_bound", busid=busid, desc=description))
 
+    def _on_device_unplugged(self, busid: str):
+        self._device_table.remove_device(busid)
+        logger.info(f"Device unplugged: {busid}")
+
     # --- Service monitor handlers ---
+
+    def _on_service_healthy(self):
+        self._service_healthy = True
+        self._update_status()
 
     def _on_service_down(self):
         self._service_healthy = False

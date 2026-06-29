@@ -21,7 +21,7 @@ class DevicePoller(QThread):
         self._running = False
         self._refresh_now = False
         self._lock = threading.Lock()
-        self._last_service_ok = False  # Start unknown; first successful poll sends True
+        self._last_service_ok: bool | None = None  # None forces first poll to always emit
 
     def set_poll_interval(self, seconds: int):
         self._poll_interval = max(1, seconds)
