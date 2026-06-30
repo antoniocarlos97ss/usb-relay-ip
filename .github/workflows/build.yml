@@ -49,20 +49,22 @@ jobs:
           curl -L -o usbipd-install/USBip-0.9.7.7-x64.exe "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.7.7/USBip-0.9.7.7-x64.exe"
 
       - name: Build Host (PyInstaller)
-        run: |
-          python -m PyInstaller --noconsole --onedir --uac-admin --name USBRelayHost ^
-            --add-data "host/assets/icon.ico;assets" ^
-            --add-data "usbipd-install/usbipd-win_5.3.0_x64.msi;usbipd-install" ^
-            --hidden-import fastapi --hidden-import uvicorn --hidden-import pydantic --hidden-import PyQt6 ^
-            host/main.py
+        shell: cmd
+        run: >
+          python -m PyInstaller --noconsole --onedir --uac-admin --name USBRelayHost
+          --add-data "host/assets/icon.ico;assets"
+          --add-data "usbipd-install/usbipd-win_5.3.0_x64.msi;usbipd-install"
+          --hidden-import fastapi --hidden-import uvicorn --hidden-import pydantic --hidden-import PyQt6
+          host/main.py
 
       - name: Build Client (PyInstaller)
-        run: |
-          python -m PyInstaller --noconsole --onedir --name USBRelayClient ^
-            --add-data "client/assets/icon.ico;assets" ^
-            --add-data "usbipd-install/USBip-0.9.7.7-x64.exe;usbipd-install" ^
-            --hidden-import httpx --hidden-import pydantic --hidden-import PyQt6 ^
-            client/main.py
+        shell: cmd
+        run: >
+          python -m PyInstaller --noconsole --onedir --name USBRelayClient
+          --add-data "client/assets/icon.ico;assets"
+          --add-data "usbipd-install/USBip-0.9.7.7-x64.exe;usbipd-install"
+          --hidden-import httpx --hidden-import pydantic --hidden-import PyQt6
+          client/main.py
 
       - name: Install NSIS
         run: choco install nsis -y
