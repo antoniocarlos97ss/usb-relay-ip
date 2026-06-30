@@ -21,6 +21,8 @@ class TestHostAPIIntegration(unittest.TestCase):
         mock_server_config.load_config.return_value = Mock(api_key="")
         mock_health_usbipd.is_available.return_value = True
         mock_health_usbipd.get_version.return_value = (4, 2)
+        mock_health_usbipd.check_port_listening.return_value = True
+        mock_health_usbipd.get_service_state.return_value = "RUNNING"
         mock_health_usbipd.list_devices.return_value = [
             UsbDevice(busid="1-5", vid="046d", pid="c31c", description="KB", state="Shared"),
         ]
@@ -119,6 +121,8 @@ class TestHostAPIIntegration(unittest.TestCase):
             poll_interval_seconds=5,
             autostart_as_service=False,
             permanent_devices=[],
+            auto_share_all=False,
+            auto_share_exclude=[],
         )
 
         from host.api.server import app

@@ -25,20 +25,24 @@ class TestUsbipdWrapper(unittest.TestCase):
             self.assertEqual(version, (0, 0))
 
     def test_is_available_true(self):
-        with patch("host.core.usbipd_wrapper._run_command") as mock_run:
+        with patch("host.core.usbipd_wrapper._find_usbipd") as mock_find, \
+             patch("host.core.usbipd_wrapper._run_command") as mock_run:
+            mock_find.return_value = "/usr/bin/usbipd"
             mock_run.return_value = (0, "usbipd version 4.2.0", "")
             from host.core.usbipd_wrapper import is_available
             self.assertTrue(is_available())
 
     def test_is_available_false_if_version_too_low(self):
-        with patch("host.core.usbipd_wrapper._run_command") as mock_run:
+        with patch("host.core.usbipd_wrapper._find_usbipd") as mock_find, \
+             patch("host.core.usbipd_wrapper._run_command") as mock_run:
+            mock_find.return_value = "/usr/bin/usbipd"
             mock_run.return_value = (0, "usbipd version 3.0.0", "")
             from host.core.usbipd_wrapper import is_available
             self.assertFalse(is_available())
 
     def test_is_available_false_if_not_found(self):
-        with patch("host.core.usbipd_wrapper._run_command") as mock_run:
-            mock_run.return_value = (-1, "", "not found")
+        with patch("host.core.usbipd_wrapper._find_usbipd") as mock_find:
+            mock_find.return_value = None
             from host.core.usbipd_wrapper import is_available
             self.assertFalse(is_available())
 
@@ -222,17 +226,6 @@ class TestGetServiceState(unittest.TestCase):
 class TestEnsureServiceRunning(unittest.TestCase):
     """Tests for the refactored ensure_service_running()."""
 
-    _STOPPED_RESPONSE = Mock(
-        stdout="SERVICE_NAME: usbipd\n"
-               "        STATE              : 1  STOPPED\n",
-        stderr="",
-    )
-    _RUNNING_RESPONSE = Mock(
-        stdout="SERVICE_NAME: usbipd\n"
-               "        STATE              : 4  RUNNING\n",
-        stderr="",
-    )
-
     @patch("host.core.usbipd_wrapper.check_port_listening")
     def test_already_listening(self, mock_port):
         mock_port.return_value = True
@@ -241,74 +234,55 @@ class TestEnsureServiceRunning(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("listening", msg.lower())
 
-    @patch("host.core.usbipd_wrapper.time")
-    @patch("host.core.usbipd_wrapper.subprocess.run")
+    @patch("host.core.usbipd_wrapper._find_usbipd")
     @patch("host.core.usbipd_wrapper.check_port_listening")
-    def test_service_stopped_starts_ok(self, mock_port, mock_sc, mock_time):
+    def test_service_not_installed(self, mock_port, mock_find):
+        mock_port.return_value = False
+        mock_find.return_value = None
+
+        from host.core.usbipd_wrapper import ensure_service_running
+        ok, msg = ensure_service_running()
+        self.assertFalse(ok)
+        self.assertIn("nao encontrado", msg.lower())
+
+    @patch("host.core.usbipd_wrapper._register_proc")
+    @patch("host.core.usbipd_wrapper._find_usbipd")
+    @patch("host.core.usbipd_wrapper.subprocess.Popen")
+    @patch("host.core.usbipd_wrapper.check_port_listening")
+    @patch("host.core.usbipd_wrapper.time")
+    @patch("builtins.open", create=True)
+    def test_service_stopped_starts_ok(self, mock_open, mock_time, mock_port,
+                                       mock_popen, mock_find, mock_register):
         mock_time.sleep = Mock()
-        # Port checks: initial=False, _wait_for_port: False, True
-        mock_port.side_effect = [False, False, True]
-        sc_start_result = Mock(stdout="", stderr="", returncode=0)
-        # sc calls: get_service_state (STOPPED), sc start
-        mock_sc.side_effect = [self._STOPPED_RESPONSE, sc_start_result]
+        # check_port_listening: initial=False, then True after server starts
+        mock_port.side_effect = [False, True]
+        mock_find.return_value = "/usr/bin/usbipd"
+        mock_proc = Mock()
+        mock_proc.poll.return_value = None
+        mock_popen.return_value = mock_proc
 
         from host.core.usbipd_wrapper import ensure_service_running
         ok, msg = ensure_service_running()
         self.assertTrue(ok)
 
-    @patch("host.core.usbipd_wrapper.time")
-    @patch("host.core.usbipd_wrapper.subprocess.run")
+    @patch("host.core.usbipd_wrapper._find_usbipd")
     @patch("host.core.usbipd_wrapper.check_port_listening")
-    def test_service_not_installed(self, mock_port, mock_sc, mock_time):
-        mock_time.sleep = Mock()
+    def test_start_fails_returns_false(self, mock_port, mock_find):
+        """When usbipd server exits prematurely, ensure_service_running returns False."""
         mock_port.return_value = False
-        sc_query_result = Mock(
-            stdout="",
-            stderr="[SC] OpenService FAILED 1060",
-        )
-        mock_sc.side_effect = [sc_query_result]
+        mock_find.return_value = "/usr/bin/usbipd"
 
-        from host.core.usbipd_wrapper import ensure_service_running
-        ok, msg = ensure_service_running()
-        self.assertFalse(ok)
-        self.assertIn("not installed", msg.lower())
+        mock_proc = Mock()
+        # proc.poll() returns non-None immediately (process exited)
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
 
-    @patch("host.core.usbipd_wrapper.time")
-    @patch("host.core.usbipd_wrapper.subprocess.run")
-    @patch("host.core.usbipd_wrapper.check_port_listening")
-    def test_start_fails_returns_false(self, mock_port, mock_sc, mock_time):
-        """When sc start fails to bind the port, ensure_service_running returns False.
-
-        Supply enough mock entries for ALL subprocess.run calls:
-        1. get_service_state (initial query) → STOPPED
-        2. sc start (first start attempt)
-        3. get_service_state (refresh after _wait_for_port fails, before forced restart)
-        4. sc stop (forced restart stop)
-        5. get_service_state (wait for stop)
-        6. sc start (forced restart start)
-        7. get_service_state (final state for error message)
-        """
-        mock_time.sleep = Mock()
-        # All port checks return False
-        mock_port.return_value = False
-
-        sc_start_result = Mock(
-            stdout="An instance of the service is already running.",
-            stderr="",
-            returncode=0,
-        )
-        sc_stop_result = Mock(stdout="", stderr="", returncode=0)
-        mock_sc.side_effect = [
-            self._STOPPED_RESPONSE,  # 1. initial get_service_state
-            sc_start_result,          # 2. sc start
-            self._STOPPED_RESPONSE,  # 3. refresh get_service_state after _wait_for_port fails
-            sc_stop_result,           # 4. sc stop (forced restart)
-            self._STOPPED_RESPONSE,  # 5. wait for stop
-            sc_start_result,          # 6. sc start (forced restart)
-            self._STOPPED_RESPONSE,  # 7. final get_service_state for error message
-        ]
-
-        from host.core.usbipd_wrapper import ensure_service_running
-        ok, msg = ensure_service_running()
-        self.assertFalse(ok)
-        self.assertIn("Could not start", msg)
+        with patch("host.core.usbipd_wrapper._register_proc"), \
+             patch("host.core.usbipd_wrapper.subprocess.Popen", return_value=mock_proc), \
+             patch("host.core.usbipd_wrapper.time") as mock_time, \
+             patch("builtins.open", create=True):
+            mock_time.sleep = Mock()
+            from host.core.usbipd_wrapper import ensure_service_running
+            ok, msg = ensure_service_running()
+            self.assertFalse(ok)
+            self.assertIn("encerrou prematuramente", msg.lower())
