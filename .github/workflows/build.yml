@@ -70,10 +70,12 @@ jobs:
         run: choco install nsis -y
 
       - name: Build Host Installer (NSIS)
-        run: makensis build/installer_host.nsi
+        shell: cmd
+        run: '"C:\Program Files (x86)\NSIS\makensis.exe" build/installer_host.nsi'
 
       - name: Build Client Installer (NSIS)
-        run: makensis build/installer_client.nsi
+        shell: cmd
+        run: '"C:\Program Files (x86)\NSIS\makensis.exe" build/installer_client.nsi'
 
       - name: Upload Host Installer
         uses: actions/upload-artifact@v4
