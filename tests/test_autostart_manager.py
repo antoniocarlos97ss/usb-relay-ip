@@ -52,24 +52,22 @@ class TestAutostartManagerHost(unittest.TestCase):
         self.assertTrue(boot_ok)
 
     def test_is_registered_true(self):
-        mock_winreg = sys.modules["winreg"]
-        mock_winreg.OpenKey.side_effect = None
-        mock_key = MagicMock()
-        mock_winreg.OpenKey.return_value = mock_key
-        mock_winreg.QueryValueEx.return_value = ("USBRelayHost", 1)
+        with patch("host.core.autostart_manager.winreg") as mock_winreg:
+            mock_key = MagicMock()
+            mock_winreg.OpenKey.return_value = mock_key
+            mock_winreg.QueryValueEx.return_value = ("USBRelayHost", 1)
 
-        from host.core.autostart_manager import is_registered
-        result = is_registered()
-        self.assertTrue(result)
+            from host.core.autostart_manager import is_registered
+            result = is_registered()
+            self.assertTrue(result)
 
     def test_is_registered_false(self):
-        mock_winreg = sys.modules["winreg"]
-        mock_winreg.OpenKey.side_effect = FileNotFoundError("key not found")
-        mock_winreg.OpenKey.return_value = None
+        with patch("host.core.autostart_manager.winreg") as mock_winreg:
+            mock_winreg.OpenKey.side_effect = FileNotFoundError("key not found")
 
-        from host.core.autostart_manager import is_registered
-        result = is_registered()
-        self.assertFalse(result)
+            from host.core.autostart_manager import is_registered
+            result = is_registered()
+            self.assertFalse(result)
 
 
 class TestAutostartManagerClient(unittest.TestCase):
