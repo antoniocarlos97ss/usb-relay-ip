@@ -155,7 +155,7 @@ def _stop_service() -> tuple[bool, str]:
     return returncode == 0, output.strip() or "sc stop usbipd failed"
 
 
-def _wait_for_port(timeout_seconds: float = 15.0, interval_seconds: float = 0.5) -> bool:
+def _wait_for_port(timeout_seconds: float = 30.0, interval_seconds: float = 0.5) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if check_port_listening(3240):
@@ -348,6 +348,10 @@ def ensure_service_running() -> tuple[bool, str]:
                 return False, f'Could not start usbipd service: {msg}'
             if _wait_for_port():
                 return True, 'usbipd service started and is listening on port 3240.'
+            # One more short wait in case the service is still settling.
+            time.sleep(3)
+            if check_port_listening(3240):
+                return True, 'usbipd service started and is listening on port 3240.'
             return False, 'usbipd service was started but port 3240 is not responding.'
 
         if state == "RUNNING":
@@ -360,6 +364,9 @@ def ensure_service_running() -> tuple[bool, str]:
             if not started:
                 return False, f'Could not start usbipd service: {start_msg}'
             if _wait_for_port():
+                return True, 'usbipd service restarted and is listening on port 3240.'
+            time.sleep(3)
+            if check_port_listening(3240):
                 return True, 'usbipd service restarted and is listening on port 3240.'
             return False, 'usbipd service was restarted but port 3240 is not responding.'
 

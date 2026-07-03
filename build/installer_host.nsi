@@ -59,6 +59,7 @@ usbipd_config:
     ExecWait 'sc config usbipd start= auto'
     ExecWait 'sc failureflag usbipd 1'
     ExecWait 'sc failure usbipd reset= 86400 actions= restart/60000/restart/60000/'
+    ExecWait 'sc start usbipd'
     ; Register the SYSTEM boot task so the Host starts without login.
     ExecWait '"$INSTDIR\USBRelayHost.exe" --register-headless'
 
