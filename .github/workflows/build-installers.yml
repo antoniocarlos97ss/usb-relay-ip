@@ -1,0 +1,40 @@
+name: Build Installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/session-resilience
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+        shell: powershell
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip pyinstaller -r requirements-client.txt -r requirements-host.txt
+
+      - name: Build installers
+        run: bash build/build_installers.sh
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-relay-installers
+          path: dist/*.exe

@@ -10,14 +10,14 @@ class TestUsbipWrapper(unittest.TestCase):
         self.addCleanup(patch.stopall)
 
     def test_is_available_true(self):
-        with patch("client.core.usbip_wrapper._run_command") as mock_run:
-            mock_run.return_value = (0, "usbipd version 4.2.0", "")
+        with patch("client.core.usbip_wrapper._find_usbip") as mock_find:
+            mock_find.return_value = "C:\\USBip\\usbip.exe"
             from client.core.usbip_wrapper import is_available
             self.assertTrue(is_available())
 
     def test_is_available_false(self):
-        with patch("client.core.usbip_wrapper._run_command") as mock_run:
-            mock_run.return_value = (-1, "", "not found")
+        with patch("client.core.usbip_wrapper._find_usbip") as mock_find:
+            mock_find.return_value = None
             from client.core.usbip_wrapper import is_available
             self.assertFalse(is_available())
 
@@ -52,14 +52,15 @@ class TestUsbipWrapper(unittest.TestCase):
 
     def test_list_attached_parses_correctly(self):
         text_output = (
-            "BUSID  VID:PID                                  DEVICE                   STATE\n"
-            "1-5    046d:c31c                                 Logitech Keyboard        Attached\n"
+            "port=3 busid=1-5 046d:c31c\n"
         )
         with patch("client.core.usbip_wrapper._run_command") as mock_run:
             mock_run.return_value = (0, text_output, "")
             from client.core.usbip_wrapper import list_attached
             attached = list_attached()
-            self.assertGreaterEqual(len(attached), 1)
+            self.assertEqual(len(attached), 1)
+            self.assertEqual(attached[0].busid, "1-5")
+            self.assertEqual(attached[0].port, 3)
 
     def test_list_attached_empty(self):
         with patch("client.core.usbip_wrapper._run_command") as mock_run:
@@ -70,14 +71,13 @@ class TestUsbipWrapper(unittest.TestCase):
 
     def test_find_port_for_busid_found(self):
         text_output = (
-            "BUSID  VID:PID                                  DEVICE                   STATE\n"
-            "1-5    046d:c31c                                 Logitech Keyboard        Attached\n"
+            "port=3 busid=1-5 046d:c31c\n"
         )
         with patch("client.core.usbip_wrapper._run_command") as mock_run:
             mock_run.return_value = (0, text_output, "")
             from client.core.usbip_wrapper import find_port_for_busid
             port = find_port_for_busid("1-5")
-            self.assertIn(port, (0, None))
+            self.assertEqual(port, 3)
 
     def test_find_port_for_busid_not_found(self):
         with patch("client.core.usbip_wrapper._run_command") as mock_run:

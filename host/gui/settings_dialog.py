@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from host.core import config_manager
+from host.core import autostart_manager, config_manager
 from shared.constants import DEFAULT_API_PORT, POLL_INTERVAL_DEFAULT
 from shared.i18n import t
 
@@ -172,7 +172,7 @@ class SettingsDialog(QWidget):
         self._port_spin.setValue(config.api_port)
         self._api_key_input.setText(config.api_key)
         self._poll_spin.setValue(config.poll_interval_seconds)
-        self._autostart_check.setChecked(config.autostart_as_service)
+        self._autostart_check.setChecked(config.autostart_as_service or autostart_manager.is_registered())
         self._auto_share_check.setChecked(config.auto_share_all)
         for excl in config.auto_share_exclude:
             self._exclusion_list.addItem(excl)

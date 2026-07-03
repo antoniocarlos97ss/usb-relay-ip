@@ -1,6 +1,5 @@
 import json
 import logging
-from typing import Optional
 import os
 import re
 import shutil
@@ -15,31 +14,48 @@ from shared.models import CommandResult, UsbDevice
 
 logger = logging.getLogger(__name__)
 
-_subprocesses: list[subprocess.Popen] = []
+
+def _register_proc(proc):
+    return None
 
 
-def _register_proc(proc: subprocess.Popen):
-    _subprocesses.append(proc)
-
-
-def _unregister_proc(proc: subprocess.Popen):
-    try:
-        _subprocesses.remove(proc)
-    except ValueError:
-        pass
+def _unregister_proc(proc):
+    return None
 
 
 def kill_all_subprocesses():
-    # Kill only the subprocesses WE registered — do NOT blanket-taskkill
-    # all usbipd.exe processes, as that would kill the headless daemon
-    # running in Session 0 (breaks session resilience).
-    for proc in list(_subprocesses):
-        try:
-            proc.kill()
-            proc.wait(timeout=2)
-        except Exception:
-            pass
-    _subprocesses.clear()
+    return None
+
+
+def _run_sc(args: list[str]) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            ["sc"] + args,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+    except FileNotFoundError:
+        return -1, "", "sc not found"
+    except subprocess.TimeoutExpired:
+        return -1, "", "sc command timed out"
+
+
+def _sc_output_contains_not_installed(output: str) -> bool:
+    lowered = output.lower()
+    return "failed 1060" in lowered or "specified service does not exist" in lowered
+
+
+def _parse_sc_state(output: str) -> str:
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("STATE"):
+            parts = line.split()
+            if len(parts) >= 3:
+                return parts[-1].upper()
+    return "UNKNOWN"
 
 
 def get_service_state() -> str:
@@ -54,21 +70,14 @@ def get_service_state() -> str:
     if check_port_listening(3240):
         return "RUNNING"
     try:
-        proc = subprocess.run(
-            ["sc", "query", "usbipd"],
-            capture_output=True, text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        output = (proc.stdout or "") + (proc.stderr or "")
-        if "FAILED 1060" in output or "specified service does not exist" in output.lower():
+        returncode, stdout, stderr = _run_sc(["query", "usbipd"])
+        output = (stdout or "") + (stderr or "")
+        if returncode != 0 and _sc_output_contains_not_installed(output):
             return "NOT_INSTALLED"
-        for line in output.splitlines():
-            line = line.strip()
-            if line.startswith("STATE"):
-                parts = line.split()
-                if len(parts) >= 3:
-                    return parts[-1].upper()
-        return "UNKNOWN"
+        if _sc_output_contains_not_installed(output):
+            return "NOT_INSTALLED"
+        state = _parse_sc_state(output)
+        return state
     except Exception as exc:
         logger.warning(f"Failed to query usbipd service state: {exc}")
         return "UNKNOWN"
@@ -131,6 +140,28 @@ def _run_command(args: list[str], timeout: int = 15) -> tuple[int, str, str]:
         return -1, "", f"Executable not found: {exe_path}"
     except Exception as exc:
         return -3, "", str(exc)
+
+
+def _start_service() -> tuple[bool, str]:
+    returncode, stdout, stderr = _run_sc(["start", "usbipd"])
+    output = (stdout or "") + (stderr or "")
+    return returncode == 0, output.strip() or "sc start usbipd failed"
+
+
+def _stop_service() -> tuple[bool, str]:
+    returncode, stdout, stderr = _run_sc(["stop", "usbipd"])
+    output = (stdout or "") + (stderr or "")
+    # sc stop returns 0 even when service is already stopping/stopped in some cases.
+    return returncode == 0, output.strip() or "sc stop usbipd failed"
+
+
+def _wait_for_port(timeout_seconds: float = 15.0, interval_seconds: float = 0.5) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if check_port_listening(3240):
+            return True
+        time.sleep(interval_seconds)
+    return False
 
 
 def _parse_version(version_text: str) -> tuple[int, int]:
@@ -295,56 +326,46 @@ def check_port_listening(port: int = 3240) -> bool:
 
 
 def ensure_service_running() -> tuple[bool, str]:
-    '''Ensure that the usbipd server is running and listening on port 3240.
-
-    Instead of relying on the Windows service (which is disabled by the installer),
-    this launches usbipd.exe server as a managed child process. The process is
-    registered in _subprocesses and automatically cleaned up when the app exits.
-    '''
+    """Ensure that the usbipd Windows service is running and listening on port 3240."""
     if check_port_listening(3240):
         return True, 'Server is listening on port 3240.'
 
-    logger.info('usbipd server is not listening. Attempting to start it as child process...')
-    exe_path = _find_usbipd()
-    if not exe_path:
-        return False, f'{USBIPD_EXE} nao encontrado. Execute o instalador primeiro.'
-
     try:
-        # Capture stderr to a log file for diagnostics
-        log_path = os.path.join(
-            os.environ.get("TEMP", "C:\\Temp"),
-            "usbipd_server.log"
-        )
-        with open(log_path, "a") as log_file:
-            proc = subprocess.Popen(
-                [exe_path, "server"],
-                stdout=subprocess.DEVNULL,
-                stderr=log_file,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
-        _register_proc(proc)
+        state = get_service_state()
+        if state == "NOT_INSTALLED":
+            return False, f'{USBIPD_EXE} service not installed. Execute o instalador primeiro.'
 
-        # Wait for the server to bind port 3240
-        for _ in range(12):  # 12 x 0.5s = 6s timeout
-            time.sleep(0.5)
-            if check_port_listening(3240):
-                return True, "usbipd server started and is listening on port 3240."
-            # Detect premature exit (e.g. missing .NET runtime, permission denied)
-            if proc.poll() is not None:
-                _unregister_proc(proc)
-                return (
-                    False,
-                    f"usbipd server encerrou prematuramente "
-                    f"(código {proc.returncode})."
-                    f" Verifique {log_path} para detalhes."
-                )
+        if state == "START_PENDING":
+            logger.info("usbipd service is START_PENDING. Waiting for port 3240...")
+            if _wait_for_port():
+                return True, 'usbipd service is starting and is listening on port 3240.'
+            return False, 'usbipd service is starting but port 3240 is not responding.'
 
-        # Timed out -- kill the process so we don't leave orphans
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        _unregister_proc(proc)
-        return False, 'usbipd server foi iniciado mas a porta 3240 nao esta respondendo.'
+        if state in ("STOPPED", "STOP_PENDING", "PAUSED", "UNKNOWN"):
+            logger.info("usbipd service is not running. Attempting to start it via SCM...")
+            started, msg = _start_service()
+            if not started:
+                return False, f'Could not start usbipd service: {msg}'
+            if _wait_for_port():
+                return True, 'usbipd service started and is listening on port 3240.'
+            return False, 'usbipd service was started but port 3240 is not responding.'
+
+        if state == "RUNNING":
+            logger.warning("usbipd service reports RUNNING but port 3240 is not listening. Restarting via SCM...")
+            stopped, stop_msg = _stop_service()
+            if not stopped:
+                logger.warning(f'Could not stop usbipd service during recovery: {stop_msg}')
+            time.sleep(1)
+            started, start_msg = _start_service()
+            if not started:
+                return False, f'Could not start usbipd service: {start_msg}'
+            if _wait_for_port():
+                return True, 'usbipd service restarted and is listening on port 3240.'
+            return False, 'usbipd service was restarted but port 3240 is not responding.'
+
+        started, msg = _start_service()
+        if started and _wait_for_port():
+            return True, 'usbipd service started and is listening on port 3240.'
+        return False, f'Could not start usbipd service: {msg}'
     except Exception as exc:
-        return False, f'Falha ao iniciar usbipd server: {exc}'
+        return False, f'Falha ao iniciar usbipd service: {exc}'

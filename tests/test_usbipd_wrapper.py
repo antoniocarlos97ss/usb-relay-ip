@@ -150,20 +150,22 @@ class TestUsbipdWrapper(unittest.TestCase):
 class TestGetServiceState(unittest.TestCase):
     """Tests for get_service_state() parsing of sc query output."""
 
+    @patch("host.core.usbipd_wrapper.check_port_listening", return_value=False)
     @patch("host.core.usbipd_wrapper.subprocess.run")
-    def test_running_state(self, mock_run):
+    def test_running_state(self, mock_run, mock_port):
         mock_run.return_value = Mock(
             stdout="SERVICE_NAME: usbipd\n"
                    "        TYPE               : 10  WIN32_OWN_POINT\n"
                    "        STATE              : 4  RUNNING\n"
                    "                              (STOPPABLE, ACCEPTS_SHUTDOWN)\n",
-            stderr="",
+                    stderr="",
         )
         from host.core.usbipd_wrapper import get_service_state
         self.assertEqual(get_service_state(), "RUNNING")
 
+    @patch("host.core.usbipd_wrapper.check_port_listening", return_value=False)
     @patch("host.core.usbipd_wrapper.subprocess.run")
-    def test_stopped_state(self, mock_run):
+    def test_stopped_state(self, mock_run, mock_port):
         mock_run.return_value = Mock(
             stdout="SERVICE_NAME: usbipd\n"
                    "        STATE              : 1  STOPPED\n",
@@ -172,8 +174,9 @@ class TestGetServiceState(unittest.TestCase):
         from host.core.usbipd_wrapper import get_service_state
         self.assertEqual(get_service_state(), "STOPPED")
 
+    @patch("host.core.usbipd_wrapper.check_port_listening", return_value=False)
     @patch("host.core.usbipd_wrapper.subprocess.run")
-    def test_stop_pending_state(self, mock_run):
+    def test_stop_pending_state(self, mock_run, mock_port):
         mock_run.return_value = Mock(
             stdout="SERVICE_NAME: usbipd\n"
                    "        STATE              : 3  STOP_PENDING\n",
@@ -182,8 +185,9 @@ class TestGetServiceState(unittest.TestCase):
         from host.core.usbipd_wrapper import get_service_state
         self.assertEqual(get_service_state(), "STOP_PENDING")
 
+    @patch("host.core.usbipd_wrapper.check_port_listening", return_value=False)
     @patch("host.core.usbipd_wrapper.subprocess.run")
-    def test_start_pending_state(self, mock_run):
+    def test_start_pending_state(self, mock_run, mock_port):
         mock_run.return_value = Mock(
             stdout="SERVICE_NAME: usbipd\n"
                    "        STATE              : 2  START_PENDING\n",
@@ -192,8 +196,9 @@ class TestGetServiceState(unittest.TestCase):
         from host.core.usbipd_wrapper import get_service_state
         self.assertEqual(get_service_state(), "START_PENDING")
 
+    @patch("host.core.usbipd_wrapper.check_port_listening", return_value=False)
     @patch("host.core.usbipd_wrapper.subprocess.run")
-    def test_not_installed(self, mock_run):
+    def test_not_installed(self, mock_run, mock_port):
         mock_run.return_value = Mock(
             stdout="",
             stderr="[SC] EnumQueryServicesStatus:OpenService FAILED 1060:\n"
@@ -202,14 +207,16 @@ class TestGetServiceState(unittest.TestCase):
         from host.core.usbipd_wrapper import get_service_state
         self.assertEqual(get_service_state(), "NOT_INSTALLED")
 
+    @patch("host.core.usbipd_wrapper.check_port_listening", return_value=False)
     @patch("host.core.usbipd_wrapper.subprocess.run")
-    def test_unknown_exception(self, mock_run):
+    def test_unknown_exception(self, mock_run, mock_port):
         mock_run.side_effect = Exception("subprocess failed")
         from host.core.usbipd_wrapper import get_service_state
         self.assertEqual(get_service_state(), "UNKNOWN")
 
+    @patch("host.core.usbipd_wrapper.check_port_listening", return_value=False)
     @patch("host.core.usbipd_wrapper.subprocess.run")
-    def test_no_state_line(self, mock_run):
+    def test_no_state_line(self, mock_run, mock_port):
         mock_run.return_value = Mock(
             stdout="SERVICE_NAME: usbipd\n"
                    "        TYPE               : 10  WIN32_OWN_POINT\n",
@@ -244,10 +251,11 @@ class TestEnsureServiceRunning(unittest.TestCase):
     @patch("host.core.usbipd_wrapper.time")
     @patch("host.core.usbipd_wrapper.subprocess.run")
     @patch("host.core.usbipd_wrapper.check_port_listening")
-    def test_service_stopped_starts_ok(self, mock_port, mock_sc, mock_time):
+    @patch("host.core.usbipd_wrapper._wait_for_port")
+    def test_service_stopped_starts_ok(self, mock_wait, mock_port, mock_sc, mock_time):
         mock_time.sleep = Mock()
-        # Port checks: initial=False, _wait_for_port: False, True
-        mock_port.side_effect = [False, False, True]
+        mock_port.side_effect = [False, False]
+        mock_wait.return_value = True
         sc_start_result = Mock(stdout="", stderr="", returncode=0)
         # sc calls: get_service_state (STOPPED), sc start
         mock_sc.side_effect = [self._STOPPED_RESPONSE, sc_start_result]
@@ -255,6 +263,26 @@ class TestEnsureServiceRunning(unittest.TestCase):
         from host.core.usbipd_wrapper import ensure_service_running
         ok, msg = ensure_service_running()
         self.assertTrue(ok)
+        self.assertIn("listening", msg.lower())
+
+    @patch("host.core.usbipd_wrapper.time")
+    @patch("host.core.usbipd_wrapper.subprocess.run")
+    @patch("host.core.usbipd_wrapper.check_port_listening")
+    @patch("host.core.usbipd_wrapper._wait_for_port")
+    def test_running_service_restarts_when_port_missing(self, mock_wait, mock_port, mock_sc, mock_time):
+        mock_time.sleep = Mock()
+        mock_port.side_effect = [False, False]
+        mock_wait.return_value = True
+        mock_sc.side_effect = [
+            self._RUNNING_RESPONSE,
+            Mock(stdout="", stderr="", returncode=0),
+            Mock(stdout="", stderr="", returncode=0),
+        ]
+
+        from host.core.usbipd_wrapper import ensure_service_running
+        ok, msg = ensure_service_running()
+        self.assertTrue(ok)
+        self.assertIn("restarted", msg.lower())
 
     @patch("host.core.usbipd_wrapper.time")
     @patch("host.core.usbipd_wrapper.subprocess.run")
@@ -277,35 +305,13 @@ class TestEnsureServiceRunning(unittest.TestCase):
     @patch("host.core.usbipd_wrapper.subprocess.run")
     @patch("host.core.usbipd_wrapper.check_port_listening")
     def test_start_fails_returns_false(self, mock_port, mock_sc, mock_time):
-        """When sc start fails to bind the port, ensure_service_running returns False.
-
-        Supply enough mock entries for ALL subprocess.run calls:
-        1. get_service_state (initial query) → STOPPED
-        2. sc start (first start attempt)
-        3. get_service_state (refresh after _wait_for_port fails, before forced restart)
-        4. sc stop (forced restart stop)
-        5. get_service_state (wait for stop)
-        6. sc start (forced restart start)
-        7. get_service_state (final state for error message)
-        """
         mock_time.sleep = Mock()
-        # All port checks return False
         mock_port.return_value = False
 
-        sc_start_result = Mock(
-            stdout="An instance of the service is already running.",
-            stderr="",
-            returncode=0,
-        )
-        sc_stop_result = Mock(stdout="", stderr="", returncode=0)
+        sc_start_result = Mock(stdout="", stderr="access denied", returncode=1)
         mock_sc.side_effect = [
-            self._STOPPED_RESPONSE,  # 1. initial get_service_state
-            sc_start_result,          # 2. sc start
-            self._STOPPED_RESPONSE,  # 3. refresh get_service_state after _wait_for_port fails
-            sc_stop_result,           # 4. sc stop (forced restart)
-            self._STOPPED_RESPONSE,  # 5. wait for stop
-            sc_start_result,          # 6. sc start (forced restart)
-            self._STOPPED_RESPONSE,  # 7. final get_service_state for error message
+            self._STOPPED_RESPONSE,
+            sc_start_result,
         ]
 
         from host.core.usbipd_wrapper import ensure_service_running

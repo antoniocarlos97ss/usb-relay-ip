@@ -19,7 +19,8 @@ def get_health(request: Request):
 
     if usbipd_avail:
         usbipd_listening = usbipd_wrapper.check_port_listening(3240)
-        usbipd_service_state = usbipd_wrapper.get_service_state()
+        service_state = usbipd_wrapper.get_service_state()
+        usbipd_service_state = service_state if isinstance(service_state, str) else ""
 
     version_str = ""
     if usbipd_avail:

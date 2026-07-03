@@ -1,8 +1,6 @@
-import atexit
 import logging
 import os
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -16,8 +14,12 @@ from shared.i18n import t
 
 
 def setup_logging():
-    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-    log_dir = os.path.join(appdata, "USBRelay")
+    if "--headless" in sys.argv:
+        base_dir = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+        log_dir = os.path.join(base_dir, "USBRelay", "logs")
+    else:
+        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        log_dir = os.path.join(appdata, "USBRelay")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "usbrelay_host.log")
 
@@ -37,22 +39,55 @@ def setup_logging():
     root_logger.addHandler(file_handler)
 
 
-def _emergency_cleanup():
-    """Cleanup usbipd subprocesses owned by this process on exit.
+def _run_startup_command() -> bool:
+    """Handle installer/runtime maintenance commands and exit early."""
+    if "--register-headless" not in sys.argv and "--unregister-headless" not in sys.argv:
+        return False
 
-    Uses kill_all_subprocesses() which only terminates the Popen processes
-    registered by this instance — NOT all usbipd.exe on the system.
-    This ensures the headless daemon (Session 0) is not affected when
-    the GUI process exits (logoff, shutdown, etc.).
-    """
-    try:
-        from host.core.usbipd_wrapper import kill_all_subprocesses
-        kill_all_subprocesses()
-    except Exception:
-        pass
+    setup_logging()
+    from host.core.autostart_manager import register_boot_task, unregister_boot_task
+
+    exe_path = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(sys.argv[0])
+    if "--register-headless" in sys.argv:
+        success = register_boot_task(exe_path)
+    else:
+        success = unregister_boot_task()
+
+    sys.exit(0 if success else 1)
 
 
-atexit.register(_emergency_cleanup)
+def _headless_service_watchdog():
+    logger = logging.getLogger(__name__)
+    from host.core import config_manager, usbipd_wrapper
+
+    while True:
+        try:
+            ok, msg = usbipd_wrapper.ensure_service_running()
+            if not ok:
+                logger.error(f"[headless] usbipd recovery failed: {msg}")
+            elif "started" in msg.lower() or "restarted" in msg.lower():
+                logger.info(f"[headless] {msg}")
+        except Exception as exc:
+            logger.error(f"[headless] usbipd watchdog error: {exc}")
+
+        config = config_manager.load_config()
+        time.sleep(max(5, config.poll_interval_seconds))
+
+
+def _headless_device_sync_loop():
+    logger = logging.getLogger(__name__)
+    from host.core import config_manager
+    from host.core.device_monitor import sync_headless_devices_once
+
+    failed_auto_share_busids: set[str] = set()
+    while True:
+        try:
+            failed_auto_share_busids = sync_headless_devices_once(failed_auto_share_busids)
+        except Exception as exc:
+            logger.error(f"[headless] device sync error: {exc}")
+
+        config = config_manager.load_config()
+        time.sleep(max(5, config.poll_interval_seconds))
 
 
 def _ensure_usbipd(parent=None) -> bool:
@@ -152,41 +187,16 @@ def run_headless_host():
     start_server(host="0.0.0.0", port=config.api_port)
     logger.info(f"[headless] API server started on port {config.api_port}")
 
-    # Auto-bind permanent devices (retry loop while usbipd settles after boot)
-    if config.permanent_devices:
-        max_attempts = 20
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                time.sleep(5)
-            try:
-                devices = usbipd_wrapper.list_devices()
-                pending = []
-                for perm in config.permanent_devices:
-                    matched = next(
-                        (d for d in devices
-                         if d.vid.lower() == perm.vid.lower()
-                         and d.pid.lower() == perm.pid.lower()),
-                        None,
-                    )
-                    if matched:
-                        if matched.state not in ("Shared", "Attached"):
-                            result = usbipd_wrapper.bind_device(matched.busid)
-                            if result.success:
-                                logger.info(f"[headless] Auto-bound {matched.busid}")
-                            else:
-                                logger.warning(f"[headless] Bind failed {matched.busid}: {result.stderr}")
-                                pending.append(perm)
-                        # else already shared/attached — OK
-                    else:
-                        pending.append(perm)
-
-                if not pending:
-                    logger.info("[headless] All permanent devices bound")
-                    break
-            except Exception as exc:
-                logger.warning(f"[headless] Auto-bind attempt {attempt + 1} failed: {exc}")
-    else:
-        logger.info("[headless] No permanent devices configured")
+    threading.Thread(
+        target=_headless_service_watchdog,
+        daemon=True,
+        name="USBRelay-Headless-USBIPD",
+    ).start()
+    threading.Thread(
+        target=_headless_device_sync_loop,
+        daemon=True,
+        name="USBRelay-Headless-Devices",
+    ).start()
 
     # Keep the process alive — API server thread is a daemon thread
     logger.info("[headless] Entering wait loop (API server running)")
@@ -194,6 +204,8 @@ def run_headless_host():
 
 
 def main():
+    if _run_startup_command():
+        return
     setup_logging()
     logger = logging.getLogger(__name__)
 

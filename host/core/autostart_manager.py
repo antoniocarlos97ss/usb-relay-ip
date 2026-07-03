@@ -55,6 +55,12 @@ _BOOT_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <StartWhenAvailable>true</StartWhenAvailable>
     <AllowHardTerminate>true</AllowHardTerminate>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -154,7 +160,7 @@ def unregister_startup() -> tuple[bool, bool]:
     return logon_ok, boot_ok
 
 
-def is_registered() -> bool:
+def is_logon_run_registered() -> bool:
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_QUERY_VALUE)
         winreg.QueryValueEx(key, RUN_VALUE)
@@ -162,3 +168,25 @@ def is_registered() -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def is_boot_task_registered() -> bool:
+    success, stdout, stderr = _run_schtasks([
+        "/Query",
+        "/TN", BOOT_TASK_NAME,
+    ])
+    output = (stdout or "") + (stderr or "")
+    if success:
+        return True
+    lowered = output.lower()
+    if "cannot find the file specified" in lowered:
+        return False
+    if "the system cannot find the file specified" in lowered:
+        return False
+    if "error: the system cannot find the file specified" in lowered:
+        return False
+    return False
+
+
+def is_registered() -> bool:
+    return is_logon_run_registered() or is_boot_task_registered()

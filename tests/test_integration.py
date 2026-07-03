@@ -119,6 +119,8 @@ class TestHostAPIIntegration(unittest.TestCase):
             poll_interval_seconds=5,
             autostart_as_service=False,
             permanent_devices=[],
+            auto_share_all=False,
+            auto_share_exclude=[],
         )
 
         from host.api.server import app

@@ -137,3 +137,38 @@ class TestAutoShare(unittest.TestCase):
         m._previous_devices = [_make_device("1-1", state="Shared")]
         result = m._device_list_changed([_make_device("1-1", state="Shared")])
         self.assertFalse(result)
+
+
+class TestHeadlessSync(unittest.TestCase):
+    @patch("host.core.device_monitor.config_manager")
+    @patch("host.core.device_monitor.usbipd_wrapper")
+    def test_headless_sync_binds_permanent_devices(self, mock_usb, mock_cfg):
+        mock_cfg.load_config.return_value = Mock(auto_share_all=False, auto_share_exclude=[])
+        mock_cfg.is_permanent.side_effect = lambda vid, pid: (vid, pid) == ("1234", "5678")
+        mock_usb.list_devices.return_value = [_make_device("1-1", state="Not shared")]
+        mock_usb.bind_device.return_value = Mock(success=True, message="ok")
+
+        from host.core.device_monitor import sync_headless_devices_once
+
+        failed = sync_headless_devices_once(set())
+
+        self.assertEqual(failed, set())
+        mock_usb.bind_device.assert_called_once_with("1-1")
+
+    @patch("host.core.device_monitor.config_manager")
+    @patch("host.core.device_monitor.usbipd_wrapper")
+    def test_headless_sync_respects_exclusions(self, mock_usb, mock_cfg):
+        mock_cfg.load_config.return_value = Mock(auto_share_all=True, auto_share_exclude=["1234:5678"])
+        mock_cfg.is_permanent.return_value = False
+        mock_usb.list_devices.return_value = [
+            _make_device("1-1", vid="1234", pid="5678", state="Not shared"),
+            _make_device("1-2", vid="abcd", pid="ef01", state="Not shared"),
+        ]
+        mock_usb.bind_device.return_value = Mock(success=True, message="ok")
+
+        from host.core.device_monitor import sync_headless_devices_once
+
+        failed = sync_headless_devices_once(set())
+
+        self.assertEqual(failed, set())
+        mock_usb.bind_device.assert_called_once_with("1-2")

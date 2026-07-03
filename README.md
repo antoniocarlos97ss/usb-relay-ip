@@ -142,7 +142,7 @@ Além do cenário Hyper-V, o USB Relay IP pode ser útil em situações como:
 
 ### Configuração de Início Automático
 
-- **Host**: Em Settings, habilite "Start with Windows as a Service" (requer NSSM)
+- **Host**: O instalador registra uma tarefa de boot headless como `SYSTEM`, e o Host pode ser habilitado na UI para iniciar automaticamente no logon
 - **Client**: Em Settings, habilite "Start with Windows at Logon" (usa o Agendador de Tarefas)
 
 Com ambos ativados, os dispositivos USB reconectam automaticamente após a reinicialização do host e da VM.
@@ -191,7 +191,8 @@ Este projeto foi viabilizado por ferramentas de terceiros que tornam o compartil
 
 ## Logs
 
-- Log do Host: `%APPDATA%\USBRelay\usbrelay_host.log`
+- Log do Host (GUI): `%APPDATA%\USBRelay\usbrelay_host.log`
+- Log do Host (headless): `%ProgramData%\USBRelay\logs\usbrelay_host.log`
 - Log do Client: `%APPDATA%\USBRelay\usbrelay_client.log`
 - Crash log do Client: `%APPDATA%\USBRelay\usbrelay_client_crash.log`
 - Máximo de 5 MB por arquivo, 3 backups rotativos (15 MB total)

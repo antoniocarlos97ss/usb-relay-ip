@@ -9,6 +9,61 @@ from shared.models import UsbDevice
 logger = logging.getLogger(__name__)
 
 
+def sync_headless_devices_once(failed_auto_share_busids: set[str] | None = None) -> set[str]:
+    """Perform one headless sync pass for permanent bind and auto-share.
+
+    Returns the updated set of busids that should be skipped on the next pass
+    because auto-share failed for them in this pass.
+    """
+    failed = set(failed_auto_share_busids or set())
+    config = config_manager.load_config()
+    devices = usbipd_wrapper.list_devices()
+    current_ids = {device.busid for device in devices}
+    failed.intersection_update(current_ids)
+
+    for device in devices:
+        device.is_permanent = config_manager.is_permanent(device.vid, device.pid)
+
+    attempted_busids: set[str] = set()
+
+    for device in devices:
+        if not device.is_permanent:
+            continue
+        if device.state in ("Shared", "Attached"):
+            continue
+        result = usbipd_wrapper.bind_device(device.busid)
+        attempted_busids.add(device.busid)
+        if result.success:
+            device.state = "Shared"
+            failed.discard(device.busid)
+            logger.info(f"Headless auto-bound permanent device {device.busid}")
+        else:
+            logger.warning(f"Headless auto-bind failed for {device.busid}: {result.message}")
+
+    if not config.auto_share_all:
+        return failed
+
+    exclude_set = set(config.auto_share_exclude)
+    for device in devices:
+        if device.busid in attempted_busids:
+            continue
+        if device.state != "Not shared":
+            continue
+        if device.busid in failed:
+            continue
+        if f"{device.vid.lower()}:{device.pid.lower()}" in exclude_set:
+            continue
+        result = usbipd_wrapper.bind_device(device.busid)
+        if result.success:
+            failed.discard(device.busid)
+            logger.info(f"Headless auto-shared device {device.busid} ({device.description})")
+        else:
+            failed.add(device.busid)
+            logger.warning(f"Headless auto-share failed for {device.busid}: {result.message}")
+
+    return failed
+
+
 class DeviceMonitor(QThread):
     devices_changed = pyqtSignal(list)
     device_bound = pyqtSignal(str, bool, str)

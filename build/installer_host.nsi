@@ -39,23 +39,28 @@ ShowUninstDetails show
 Section "USB Relay IP Host" SEC01
     SetShellVarContext all
     SetOutPath "$INSTDIR"
+    ; Stop any previous headless instance before replacing files.
+    ExecWait 'schtasks /End /TN USBRelayHostBoot'
+    ExecWait 'taskkill /F /IM USBRelayHost.exe'
     File /r "..\\dist\\USBRelayHost\\*"
 
-    IfFileExists "$PROGRAMFILES64\usbipd-win\usbipd.exe" usbipd_done 0
+    IfFileExists "$PROGRAMFILES64\usbipd-win\usbipd.exe" usbipd_config 0
     FindFirst $0 $1 "$INSTDIR\\_internal\\usbipd-install\\usbipd-win*.msi"
     ${If} $1 != ""
         DetailPrint "Instalando usbipd-win..."
         ExecWait 'msiexec /i "$INSTDIR\_internal\usbipd-install\$1" /quiet /norestart' $2
         DetailPrint "usbipd-win install exit code: $2"
-        ; Stop the service if it was already running (e.g. from a previous install)
-        ExecWait 'sc stop usbipd'
-        ; Disable service auto-start — the app manages usbipd as a child process
-        ExecWait 'sc config usbipd start= disabled'
     ${Else}
         DetailPrint "Instalador usbipd-win nao encontrado em $INSTDIR\\_internal\\usbipd-install"
     ${EndIf}
     FindClose $0
-usbipd_done:
+usbipd_config:
+    ; Keep usbipd as a normal Windows service managed by SCM.
+    ExecWait 'sc config usbipd start= auto'
+    ExecWait 'sc failureflag usbipd 1'
+    ExecWait 'sc failure usbipd reset= 86400 actions= restart/60000/restart/60000/'
+    ; Register the SYSTEM boot task so the Host starts without login.
+    ExecWait '"$INSTDIR\USBRelayHost.exe" --register-headless'
 
     WriteUninstaller "$INSTDIR\\Uninstall.exe"
     WriteRegStr HKLM "Software\\${COMPANY_NAME}\\${APP_NAME}" "InstallDir" "$INSTDIR"
@@ -72,6 +77,10 @@ SectionEnd
 
 Section "Uninstall"
     SetShellVarContext all
+    ExecWait '"$INSTDIR\USBRelayHost.exe" --unregister-headless'
+    ExecWait 'schtasks /End /TN USBRelayHostBoot'
+    ExecWait 'taskkill /F /IM USBRelayHost.exe'
+    ExecWait 'sc config usbipd start= demand'
     Delete "$DESKTOP\\USB Relay IP Host.lnk"
     Delete "$SMPROGRAMS\\${START_MENU_DIR}\\USB Relay IP Host.lnk"
     RMDir "$SMPROGRAMS\\${START_MENU_DIR}"
