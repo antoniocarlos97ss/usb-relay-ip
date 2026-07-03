@@ -30,15 +30,19 @@ pip install -r requirements-client.txt -r requirements-host.txt
 pip install pyinstaller
 
 echo "=== Step 3: Build Host (PyInstaller, icon embedded) ==="
-python -m PyInstaller --noconfirm --clean --onedir --uac-admin --name USBRelayHost \
+python -m PyInstaller --noconfirm --clean --onedir --noconsole --uac-admin --name USBRelayHost \
+  --icon "host/assets/icon.ico" \
   --add-data "host/assets/icon.ico;assets" \
+  --add-data "host/assets/icon_connected.ico;assets" \
   --add-data "usbipd-install;usbipd-install" \
   --hidden-import fastapi --hidden-import uvicorn --hidden-import pydantic --hidden-import PyQt6 \
   host/main.py
 
 echo "=== Step 4: Build Client (PyInstaller, icon embedded) ==="
-python -m PyInstaller --noconfirm --clean --onedir --name USBRelayClient \
+python -m PyInstaller --noconfirm --clean --onedir --noconsole --name USBRelayClient \
+  --icon "client/assets/icon.ico" \
   --add-data "client/assets/icon.ico;assets" \
+  --add-data "client/assets/icon_connected.ico;assets" \
   --add-data "usbipd-install;usbipd-install" \
   --hidden-import httpx --hidden-import pydantic --hidden-import PyQt6 \
   client/main.py
