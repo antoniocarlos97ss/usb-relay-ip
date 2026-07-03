@@ -69,24 +69,10 @@ python client/main.py
 ### Gerar Instaladores
 
 ```bash
-# Compilar Host (onedir + UAC admin)
-python -m PyInstaller --noconsole --onedir --uac-admin --name USBRelayHost \
-  --add-data "host/assets/icon.ico;assets" \
-  --add-data "usbipd-install/usbipd-win_5.3.0_x64.msi;usbipd-install" \
-  --hidden-import fastapi --hidden-import uvicorn --hidden-import pydantic --hidden-import PyQt6 \
-  host/main.py
-
-# Compilar Client (onedir)
-python -m PyInstaller --noconsole --onedir --name USBRelayClient \
-  --add-data "client/assets/icon.ico;assets" \
-  --add-data "usbipd-install/USBip;usbipd-install/USBip" \
-  --hidden-import httpx --hidden-import pydantic --hidden-import PyQt6 \
-  client/main.py
-
-# Gerar instaladores NSIS
-makensis build/installer_host.nsi
-makensis build/installer_client.nsi
+bash build/build_installers.sh
 ```
+
+O script baixa automaticamente os binários dependentes em `usbipd-install/`, compila os dois componentes e gera os instaladores em `dist/`.
 
 ## Guia Rápido
 
