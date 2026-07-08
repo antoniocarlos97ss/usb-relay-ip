@@ -48,7 +48,6 @@ class HostMainWindow(QMainWindow):
         self._device_table.share_requested.connect(self._share_device)
         self._device_table.unshare_requested.connect(self._unshare_device)
         self._device_table.permanent_toggle.connect(self._toggle_permanent)
-        main_layout.addWidget(self._device_table)
 
         action_layout = QHBoxLayout()
         self._share_btn = QPushButton(t("btn.share_selected"))

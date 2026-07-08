@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
@@ -10,11 +11,17 @@ from PyQt6.QtWidgets import (
 from shared.i18n import t
 
 
+class LogSignalBridge(QObject):
+    message = pyqtSignal(str)
+
+
 class QTextEditLogger(logging.Handler):
     def __init__(self, widget: QPlainTextEdit):
         super().__init__(level=logging.DEBUG)
         self._widget = widget
         self._min_level = logging.DEBUG
+        self._bridge = LogSignalBridge(widget)
+        self._bridge.message.connect(widget.appendPlainText)
 
     def set_level(self, level: int):
         self._min_level = level
@@ -23,14 +30,16 @@ class QTextEditLogger(logging.Handler):
         if record.levelno < self._min_level:
             return
         msg = self.format(record)
-        self._widget.appendPlainText(msg)
+        self._bridge.message.emit(msg)
 
 
 class LogViewer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._handler: QTextEditLogger | None = None
         self._setup_ui()
         self._setup_log_handler()
+        self.destroyed.connect(self._remove_log_handler)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -73,6 +82,11 @@ class LogViewer(QWidget):
         self._handler.setFormatter(formatter)
         logging.getLogger().addHandler(self._handler)
 
+    def _remove_log_handler(self, *_args):
+        if self._handler:
+            logging.getLogger().removeHandler(self._handler)
+            self._handler = None
+
     def _on_level_changed(self, level_str: str):
         level_map = {
             "DEBUG": logging.DEBUG,
@@ -101,6 +115,5 @@ class LogViewer(QWidget):
                 logging.getLogger(__name__).error(f"Failed to export log: {exc}")
 
     def closeEvent(self, event):
-        if hasattr(self, "_handler"):
-            logging.getLogger().removeHandler(self._handler)
+        self._remove_log_handler()
         super().closeEvent(event)

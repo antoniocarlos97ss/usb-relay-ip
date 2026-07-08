@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import traceback
+import faulthandler
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
@@ -12,8 +13,11 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 from shared.constants import APP_NAME
 from shared.i18n import t
 
+_CRASH_FH = None
+
 
 def setup_logging():
+    global _CRASH_FH
     if "--headless" in sys.argv:
         base_dir = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
         log_dir = os.path.join(base_dir, "USBRelay", "logs")
@@ -22,6 +26,11 @@ def setup_logging():
         log_dir = os.path.join(appdata, "USBRelay")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "usbrelay_host.log")
+    crash_log = os.path.join(log_dir, "usbrelay_host_crash.log")
+
+    if _CRASH_FH is None:
+        _CRASH_FH = open(crash_log, "a", encoding="utf-8")
+        faulthandler.enable(_CRASH_FH, all_threads=True)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)

@@ -7,6 +7,7 @@ __all__ = [
     "autostart_manager",
     "config_manager",
     "device_poller",
+    "scheduled_reconnect",
     "usbip_worker",
     "usbip_wrapper",
 ]

@@ -48,6 +48,9 @@ class ClientPermanentDevice(BaseModel):
     pid: str
     description: str = ""
     auto_attach: bool = True
+    scheduled_reconnect_enabled: bool = False
+    scheduled_reconnect_interval_hours: int = 24
+    last_scheduled_reconnect_at: str = ""
 
 
 class HostConfig(BaseModel):

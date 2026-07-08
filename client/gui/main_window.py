@@ -3,12 +3,12 @@ import logging
 from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QLabel, QMainWindow, QPushButton, QStatusBar,
+    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QPushButton, QStatusBar,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
 from client.api.host_client import HostApiClient
-from client.core import config_manager, device_poller, usbip_worker, usbip_wrapper
+from client.core import config_manager, device_poller, scheduled_reconnect, usbip_worker, usbip_wrapper
 from client.gui.device_table import ClientDeviceTable
 from client.gui.log_viewer import LogViewer
 from client.gui.settings_dialog import ClientSettingsDialog
@@ -53,6 +53,7 @@ class ClientMainWindow(QMainWindow):
         self._workers: list = []
         self._setup_ui()
         self._start_auto_attach()
+        self._start_scheduled_reconnect()
         self._start_polling()
 
     def _setup_ui(self):
@@ -71,6 +72,8 @@ class ClientMainWindow(QMainWindow):
         self._device_table.attach_requested.connect(self._attach_device)
         self._device_table.detach_requested.connect(self._detach_device)
         self._device_table.permanent_toggle.connect(self._toggle_permanent)
+        self._device_table.scheduled_reconnect_requested.connect(self._on_scheduled_reconnect_requested)
+        self._device_table.scheduled_reconnect_disable_requested.connect(self._on_scheduled_reconnect_disable_requested)
         main_layout.addWidget(self._device_table)
 
         action_layout = QHBoxLayout()
@@ -107,6 +110,12 @@ class ClientMainWindow(QMainWindow):
         self._api_client.host_ip = config.host_ip
         self._api_client.host_port = config.host_port
         self._api_client.api_key = config.api_key
+        if hasattr(self, "_scheduled_reconnect"):
+            self._scheduled_reconnect.update_host_config(
+                config.host_ip,
+                config.host_port,
+                config.api_key,
+            )
         logger.info(f"Settings updated, reconnecting to {config.host_ip}:{config.host_port}")
         self._restart_poller()
 
@@ -131,6 +140,15 @@ class ClientMainWindow(QMainWindow):
         self._start_polling()
 
     def _on_devices_fetched(self, devices):
+        config = config_manager.load_config()
+        scheduled = {
+            (dev.vid, dev.pid)
+            for dev in config.permanent_devices
+            if dev.scheduled_reconnect_enabled
+        }
+        self._device_table.set_scheduled_reconnect_devices(scheduled)
+        if hasattr(self, "_scheduled_reconnect"):
+            self._scheduled_reconnect.update_devices(devices)
         for device in devices:
             device.is_permanent = config_manager.is_permanent(device.vid, device.pid)
         self._device_table.update_devices(devices)
@@ -147,6 +165,8 @@ class ClientMainWindow(QMainWindow):
         else:
             self._status_label.setText(t("status.offline_retry"))
             self._tray.set_connected_state(False)
+        if hasattr(self, "_scheduled_reconnect"):
+            self._scheduled_reconnect.update_connection_state(connected)
 
     def _on_service_status_changed(self, service_ok: bool):
         old = self._service_ok
@@ -176,6 +196,8 @@ class ClientMainWindow(QMainWindow):
                 self._status_label.setText(t("status.connected", host=config.host_ip, port=config.host_port))
             else:
                 self._status_label.setText(t("status.host_service_down"))
+        if hasattr(self, "_scheduled_reconnect"):
+            self._scheduled_reconnect.update_service_state(service_ok)
 
     def _attach_device(self, busid: str):
         if not self._service_ok:
@@ -259,6 +281,89 @@ class ClientMainWindow(QMainWindow):
             config_manager.remove_permanent_device(device.vid, device.pid)
             self._tray.show_notification("USBRelay", t("notify.unmarked_perm_client", busid=busid))
         self._poller_refresh()
+
+    def _find_client_permanent_device(self, vid: str, pid: str):
+        config = config_manager.load_config()
+        for perm in config.permanent_devices:
+            if perm.vid.lower() == vid.lower() and perm.pid.lower() == pid.lower():
+                return perm
+        return None
+
+    def _on_scheduled_reconnect_requested(self, busid: str):
+        device = self._find_device_in_cache(busid)
+        if not device:
+            return
+
+        perm_device = self._find_client_permanent_device(device.vid, device.pid)
+        default_hours = 24
+        if perm_device:
+            default_hours = max(1, min(168, perm_device.scheduled_reconnect_interval_hours or 24))
+
+        hours, accepted = QInputDialog.getInt(
+            self,
+            t("dialog.scheduled_reconnect_title"),
+            t("dialog.scheduled_reconnect_prompt"),
+            default_hours,
+            1,
+            168,
+        )
+        if not accepted:
+            return
+
+        was_enabled = bool(perm_device and perm_device.scheduled_reconnect_enabled)
+        if perm_device:
+            config_manager.update_scheduled_reconnect(device.vid, device.pid, hours, device.description)
+        else:
+            config_manager.enable_scheduled_reconnect(device.vid, device.pid, hours, device.description)
+
+        if was_enabled:
+            message = t("notify.scheduled_reconnect_updated", busid=busid, hours=hours)
+        else:
+            message = t("notify.scheduled_reconnect_enabled", busid=busid, hours=hours)
+        self._tray.show_notification("USBRelay", message)
+        self._refresh_scheduled_reconnect_cache()
+        self._poller_refresh()
+
+    def _on_scheduled_reconnect_disable_requested(self, busid: str):
+        device = self._find_device_in_cache(busid)
+        if not device:
+            return
+
+        perm_device = self._find_client_permanent_device(device.vid, device.pid)
+        if not perm_device or not perm_device.scheduled_reconnect_enabled:
+            return
+
+        config_manager.disable_scheduled_reconnect(device.vid, device.pid)
+        self._tray.show_notification("USBRelay", t("notify.scheduled_reconnect_disabled", busid=busid))
+        self._refresh_scheduled_reconnect_cache()
+        self._poller_refresh()
+
+    def _start_scheduled_reconnect(self):
+        self._scheduled_reconnect = scheduled_reconnect.ScheduledReconnectController(
+            self._api_client,
+            self,
+        )
+        self._scheduled_reconnect.reconnect_failed.connect(self._on_scheduled_reconnect_failed)
+        self._scheduled_reconnect.update_host_config(
+            self._api_client.host_ip,
+            self._api_client.host_port,
+            self._api_client.api_key,
+        )
+        self._scheduled_reconnect.update_connection_state(False)
+        self._scheduled_reconnect.update_service_state(False)
+        self._scheduled_reconnect.start()
+
+    def _on_scheduled_reconnect_failed(self, busid: str, message: str):
+        logger.warning(f"Scheduled reconnect failed for {busid}: {message}")
+        self._tray.show_notification("USBRelay", t("notify.scheduled_reconnect_failed", busid=busid, msg=message))
+
+    def _refresh_scheduled_reconnect_cache(self):
+        config = config_manager.load_config()
+        self._device_table.set_scheduled_reconnect_devices({
+            (dev.vid, dev.pid)
+            for dev in config.permanent_devices
+            if dev.scheduled_reconnect_enabled
+        })
 
     def _find_device_in_cache(self, busid: str):
         for dev in self._device_table._devices:
@@ -413,6 +518,8 @@ class ClientMainWindow(QMainWindow):
         self._workers.clear()
 
     def quit_app(self):
+        if hasattr(self, "_scheduled_reconnect") and self._scheduled_reconnect:
+            self._scheduled_reconnect.stop()
         if hasattr(self, "_poller") and self._poller:
             self._poller.devices_fetched.disconnect()
             self._poller.connection_changed.disconnect()

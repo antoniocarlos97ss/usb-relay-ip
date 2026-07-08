@@ -10,6 +10,8 @@ class ClientDeviceTable(QTableWidget):
     attach_requested = pyqtSignal(str)
     detach_requested = pyqtSignal(str)
     permanent_toggle = pyqtSignal(str, bool)
+    scheduled_reconnect_requested = pyqtSignal(str)
+    scheduled_reconnect_disable_requested = pyqtSignal(str)
 
     COL_BUSID = 0
     COL_VIDPID = 1
@@ -20,6 +22,7 @@ class ClientDeviceTable(QTableWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._devices: list[UsbDevice] = []
+        self._scheduled_reconnect: set[tuple[str, str]] = set()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -74,6 +77,11 @@ class ClientDeviceTable(QTableWidget):
                 perm_item.setForeground(QColor("#ddaa00"))
             self.setItem(row, self.COL_PERMANENT, perm_item)
 
+    def set_scheduled_reconnect_devices(self, devices: set[tuple[str, str]]):
+        self._scheduled_reconnect = {
+            (vid.lower(), pid.lower()) for vid, pid in devices
+        }
+
     def _make_item(self, text: str) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -93,6 +101,20 @@ class ClientDeviceTable(QTableWidget):
         elif device.state == "Attached":
             detach_action = menu.addAction(t("ctx.detach"))
             detach_action.triggered.connect(lambda: self.detach_requested.emit(device.busid))
+
+        menu.addSeparator()
+
+        scheduled_enabled = (device.vid.lower(), device.pid.lower()) in self._scheduled_reconnect
+
+        if scheduled_enabled:
+            update_action = menu.addAction(t("ctx.scheduled_reconnect_update"))
+            update_action.triggered.connect(lambda: self.scheduled_reconnect_requested.emit(device.busid))
+
+            disable_action = menu.addAction(t("ctx.scheduled_reconnect_disable"))
+            disable_action.triggered.connect(lambda: self.scheduled_reconnect_disable_requested.emit(device.busid))
+        else:
+            enable_action = menu.addAction(t("ctx.scheduled_reconnect_enable"))
+            enable_action.triggered.connect(lambda: self.scheduled_reconnect_requested.emit(device.busid))
 
         menu.addSeparator()
 
