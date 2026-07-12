@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
 from client.api.host_client import HostApiClient
-from client.core import config_manager, usbip_wrapper
+from client.core import config_manager, operation_coordinator, usbip_wrapper
 from shared.models import UsbDevice
 
 logger = logging.getLogger(__name__)
@@ -56,8 +56,15 @@ def _mark_last_run(vid: str, pid: str, when: datetime) -> None:
             return
 
 
-def _run_reconnect_cycle(api_client: HostApiClient, device: UsbDevice) -> tuple[bool, str]:
-    matched = _find_matching_device(api_client.get_devices(), device.vid, device.pid)
+def _run_reconnect_cycle_unlocked(api_client: HostApiClient, device: UsbDevice) -> tuple[bool, str]:
+    host_devices = api_client.get_devices()
+    matched = next((item for item in host_devices if item.busid == device.busid), None)
+    if matched is None:
+        identity_matches = [
+            item for item in host_devices
+            if _normalize_key(item.vid, item.pid) == _normalize_key(device.vid, device.pid)
+        ]
+        matched = identity_matches[0] if len(identity_matches) == 1 else None
     if not matched:
         return False, f"Device {device.vid}:{device.pid} is no longer available"
 
@@ -79,12 +86,26 @@ def _run_reconnect_cycle(api_client: HostApiClient, device: UsbDevice) -> tuple[
 
     time.sleep(2)
 
-    attach_result = usbip_wrapper.attach_device(api_client.host_ip, matched.busid)
+    attach_result = usbip_wrapper.attach_device(
+        api_client.host_ip,
+        matched.busid,
+        vid=matched.vid,
+        pid=matched.pid,
+    )
     if not attach_result.success:
         return False, attach_result.message
 
     _mark_last_run(matched.vid, matched.pid, _utc_now())
     return True, matched.busid
+
+
+def _run_reconnect_cycle(api_client: HostApiClient, device: UsbDevice) -> tuple[bool, str]:
+    if not operation_coordinator.try_acquire(device.vid, device.pid, device.busid):
+        return False, "another reconnect operation is already running"
+    try:
+        return _run_reconnect_cycle_unlocked(api_client, device)
+    finally:
+        operation_coordinator.release(device.vid, device.pid, device.busid)
 
 
 class ScheduledReconnectWorker(QThread):
@@ -250,6 +271,10 @@ class ScheduledReconnectController(QObject):
 
         if success:
             logger.info("Scheduled reconnect completed for %s", busid)
+            return
+
+        if message == "another reconnect operation is already running":
+            logger.info("Scheduled reconnect deferred for %s: %s", busid, message)
             return
 
         self._failed_until[key] = self._now_provider() + FAILURE_COOLDOWN

@@ -8,7 +8,15 @@ from PyQt6.QtWidgets import (
 )
 
 from client.api.host_client import HostApiClient
-from client.core import config_manager, device_poller, scheduled_reconnect, usbip_worker, usbip_wrapper
+from client.core import (
+    config_manager,
+    device_poller,
+    operation_coordinator,
+    pnp_recovery,
+    scheduled_reconnect,
+    usbip_worker,
+    usbip_wrapper,
+)
 from client.gui.device_table import ClientDeviceTable
 from client.gui.log_viewer import LogViewer
 from client.gui.settings_dialog import ClientSettingsDialog
@@ -55,6 +63,7 @@ class ClientMainWindow(QMainWindow):
         self._start_auto_attach()
         self._start_scheduled_reconnect()
         self._start_polling()
+        self._start_pnp_recovery()
 
     def _setup_ui(self):
         central = QWidget()
@@ -107,11 +116,15 @@ class ClientMainWindow(QMainWindow):
 
     def _on_settings_changed(self):
         config = config_manager.load_config()
-        self._api_client.host_ip = config.host_ip
-        self._api_client.host_port = config.host_port
-        self._api_client.api_key = config.api_key
+        self._api_client.update_config(config.host_ip, config.host_port, config.api_key)
         if hasattr(self, "_scheduled_reconnect"):
             self._scheduled_reconnect.update_host_config(
+                config.host_ip,
+                config.host_port,
+                config.api_key,
+            )
+        if hasattr(self, "_pnp_recovery"):
+            self._pnp_recovery.update_host_config(
                 config.host_ip,
                 config.host_port,
                 config.api_key,
@@ -149,6 +162,8 @@ class ClientMainWindow(QMainWindow):
         self._device_table.set_scheduled_reconnect_devices(scheduled)
         if hasattr(self, "_scheduled_reconnect"):
             self._scheduled_reconnect.update_devices(devices)
+        if hasattr(self, "_pnp_recovery"):
+            self._pnp_recovery.update_devices(devices)
         for device in devices:
             device.is_permanent = config_manager.is_permanent(device.vid, device.pid)
         self._device_table.update_devices(devices)
@@ -204,10 +219,23 @@ class ClientMainWindow(QMainWindow):
             logger.warning(f"Cannot attach {busid}: host usbipd service is down")
             self._tray.show_notification("USBRelay", t("notify.attach_failed_service_down", busid=busid))
             return
+        device = self._find_device_in_cache(busid)
+        if device and not operation_coordinator.try_acquire(device.vid, device.pid, busid):
+            logger.warning(f"Cannot attach {busid}: another reconnect operation is running")
+            return
         config = config_manager.load_config()
         logger.info(f"Attaching device {busid} from {config.host_ip}")
-        worker = usbip_worker.AttachWorker(config.host_ip, busid)
+        worker = usbip_worker.AttachWorker(
+            config.host_ip,
+            busid,
+            vid=device.vid if device else "",
+            pid=device.pid if device else "",
+        )
         worker.finished.connect(self._on_attach_finished)
+        if device:
+            worker.finished.connect(
+                lambda *args, vid=device.vid, pid=device.pid, b=busid: operation_coordinator.release(vid, pid, b)
+            )
         worker.finished.connect(worker.deleteLater)
         worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
         self._workers.append(worker)
@@ -232,29 +260,63 @@ class ClientMainWindow(QMainWindow):
         self._poller_refresh()
 
     def _retry_attach_stale(self, busid: str):
+        device = self._find_device_in_cache(busid)
+        if not device:
+            logger.warning(f"Cannot recover stale device {busid}: device identity unavailable")
+            return
+        QTimer.singleShot(
+            0,
+            lambda: self._retry_do_unbind(busid, device.vid, device.pid),
+        )
+
+    def _retry_do_unbind(self, busid: str, vid: str, pid: str):
+        if not operation_coordinator.try_acquire(vid, pid, busid):
+            logger.warning(f"Cannot recover stale device {busid}: another operation is running")
+            return
         logger.info(f"Trying to recover stale device {busid} via host unbind+rebind")
-        self._api_client.unbind_device(busid)
-        # Use QTimer to avoid blocking the GUI thread
-        QTimer.singleShot(2000, lambda: self._retry_do_bind(busid))
+        if not self._api_client.unbind_device(busid):
+            operation_coordinator.release(vid, pid, busid)
+            logger.warning(f"Cannot recover stale device {busid}: host unbind failed")
+            return
+        QTimer.singleShot(2000, lambda: self._retry_do_bind(busid, vid, pid))
 
-    def _retry_do_bind(self, busid: str):
-        self._api_client.bind_device(busid)
-        QTimer.singleShot(2000, lambda: self._retry_do_attach(busid))
+    def _retry_do_bind(self, busid: str, vid: str, pid: str):
+        if not self._api_client.bind_device(busid):
+            operation_coordinator.release(vid, pid, busid)
+            logger.warning(f"Cannot recover stale device {busid}: host bind failed")
+            return
+        QTimer.singleShot(2000, lambda: self._retry_do_attach(busid, vid, pid))
 
-    def _retry_do_attach(self, busid: str):
+    def _retry_do_attach(self, busid: str, vid: str, pid: str):
         config = config_manager.load_config()
-        worker = usbip_worker.AttachWorker(config.host_ip, busid)
+        worker = usbip_worker.AttachWorker(
+            config.host_ip,
+            busid,
+            vid=vid,
+            pid=pid,
+        )
         worker.finished.connect(self._on_attach_finished)
+        worker.finished.connect(lambda *args: operation_coordinator.release(vid, pid, busid))
         worker.finished.connect(worker.deleteLater)
         worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
         self._workers.append(worker)
         worker.start()
 
     def _detach_device(self, busid: str):
+        device = self._find_device_in_cache(busid)
+        if not device:
+            logger.warning(f"Cannot detach {busid}: device identity unavailable")
+            return
+        if not operation_coordinator.try_acquire(device.vid, device.pid, busid):
+            logger.warning(f"Cannot detach {busid}: another reconnect operation is running")
+            return
         logger.info(f"Detaching device {busid}")
-        port = self._port_map.get(busid)
-        worker = usbip_worker.DetachWorker(busid, port=port)
+        # Always resolve the current port: a reattach may allocate a new one.
+        worker = usbip_worker.DetachWorker(busid, port=None)
         worker.finished.connect(self._on_detach_finished)
+        worker.finished.connect(
+            lambda *args, vid=device.vid, pid=device.pid, b=busid: operation_coordinator.release(vid, pid, b)
+        )
         worker.finished.connect(worker.deleteLater)
         worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
         self._workers.append(worker)
@@ -357,6 +419,24 @@ class ClientMainWindow(QMainWindow):
         logger.warning(f"Scheduled reconnect failed for {busid}: {message}")
         self._tray.show_notification("USBRelay", t("notify.scheduled_reconnect_failed", busid=busid, msg=message))
 
+    def _start_pnp_recovery(self):
+        self._pnp_recovery = pnp_recovery.PnpRecoveryMonitor(self._api_client, self)
+        self._pnp_recovery.recovery_succeeded.connect(self._on_pnp_recovery_succeeded)
+        self._pnp_recovery.recovery_failed.connect(self._on_pnp_recovery_failed)
+        self._pnp_recovery.start()
+
+    def _on_pnp_recovery_succeeded(self, busid: str, message: str):
+        logger.info(f"Automatic PnP recovery succeeded for {busid}: {message}")
+        self._poller_refresh()
+
+    def _on_pnp_recovery_failed(self, busid: str, message: str):
+        logger.error(f"Automatic PnP recovery failed for {busid}: {message}")
+        self._tray.show_notification(
+            "USBRelay",
+            t("notify.pnp_recovery_failed", busid=busid, msg=message),
+        )
+        self._poller_refresh()
+
     def _refresh_scheduled_reconnect_cache(self):
         config = config_manager.load_config()
         self._device_table.set_scheduled_reconnect_devices({
@@ -407,9 +487,7 @@ class ClientMainWindow(QMainWindow):
         if not host_ip or not config.permanent_devices:
             return
 
-        self._api_client.host_ip = host_ip
-        self._api_client.host_port = config.host_port
-        self._api_client.api_key = config.api_key
+        self._api_client.update_config(host_ip, config.host_port, config.api_key)
 
         for perm_device in config.permanent_devices:
             self._tray.show_notification(
@@ -437,11 +515,22 @@ class ClientMainWindow(QMainWindow):
         if matched and matched.state == "Shared":
             desc = matched.description
             busid = matched.busid
-            worker = usbip_worker.AttachWorker(host_ip, busid)
+            if not operation_coordinator.try_acquire(matched.vid, matched.pid, busid):
+                QTimer.singleShot(delay_ms, lambda: self._retry_attach(vid, pid, host_ip, attempts + 1))
+                return
+            worker = usbip_worker.AttachWorker(
+                host_ip,
+                busid,
+                vid=matched.vid,
+                pid=matched.pid,
+            )
             worker.finished.connect(
                 lambda success, msg, b=busid, port=0, d=desc: self._on_auto_attach_finished(success, b, d, port),
             )
             worker.finished.connect(worker.deleteLater)
+            worker.finished.connect(
+                lambda *args, v=matched.vid, p=matched.pid, b=busid: operation_coordinator.release(v, p, b)
+            )
             worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
             self._workers.append(worker)
             worker.start()
@@ -471,11 +560,14 @@ class ClientMainWindow(QMainWindow):
         if not self._port_map:
             return
         logger.info(f"Detaching {len(self._port_map)} devices before quit")
-        from client.core import usbip_wrapper
         import time
         for busid, port in list(self._port_map.items()):
-            logger.info(f"Detaching {busid} (port {port})")
-            result = usbip_wrapper.detach_device(port)
+            current_port = usbip_wrapper.find_port_for_busid(busid)
+            if current_port is None:
+                logger.warning(f"Cannot find current port for {busid}; skipping shutdown detach")
+                continue
+            logger.info(f"Detaching {busid} (port {current_port})")
+            result = usbip_wrapper.detach_device(current_port)
             if result.success:
                 logger.info(f"Detached {busid}")
                 if not self._shutting_down:
@@ -490,12 +582,11 @@ class ClientMainWindow(QMainWindow):
         if not self._port_map:
             return
         logger.info(f"Async detaching {len(self._port_map)} devices")
-        from client.core import usbip_worker as uw
-        uw.set_shutting_down()
+        usbip_worker.set_shutting_down()
         ports = list(self._port_map.items())
         self._port_map.clear()
         for busid, port in ports:
-            worker = uw.DetachWorker(busid, port=port)
+            worker = usbip_worker.DetachWorker(busid, port=None)
             worker.finished.connect(
                 lambda success, msg, b=busid: logger.info(
                     f"Shutdown detach {b}: {'OK' if success else 'FAIL: ' + msg}"
@@ -506,7 +597,6 @@ class ClientMainWindow(QMainWindow):
 
     def force_cleanup(self):
         logger.info("Force cleanup: killing subprocesses and workers")
-        from client.core import usbip_wrapper
         usbip_wrapper.kill_all_subprocesses()
         for w in list(self._workers):
             if w.isRunning():
@@ -525,8 +615,11 @@ class ClientMainWindow(QMainWindow):
             self._poller.connection_changed.disconnect()
             self._poller.service_status_changed.disconnect()
             self._poller.stop()
-            self._poller.wait(3000)
+            self._poller.wait(1000)
             self._poller = None
+        if hasattr(self, "_pnp_recovery") and self._pnp_recovery:
+            self._pnp_recovery.stop()
+        operation_coordinator.reset()
 
     def quit_app_with_detach(self):
         if self._shutting_down:

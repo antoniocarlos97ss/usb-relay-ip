@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 from shared.constants import CLIENT_CONFIG_FILE, CONFIG_DIR_NAME
@@ -24,7 +25,9 @@ def _config_path() -> str:
 
 def _shared_config_dir() -> str:
     """%ProgramData%\\USBRelay — readable/writable by SYSTEM and all local users."""
-    programdata = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    programdata = os.environ.get("PROGRAMDATA")
+    if not programdata:
+        programdata = r"C:\ProgramData" if sys.platform == "win32" else tempfile.gettempdir()
     path = os.path.join(programdata, CONFIG_DIR_NAME)
     try:
         os.makedirs(path, exist_ok=True)

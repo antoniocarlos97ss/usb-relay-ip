@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import traceback
+import tempfile
 import faulthandler
 
 from PyQt6.QtCore import Qt, QTimer
@@ -19,7 +20,9 @@ _CRASH_FH = None
 def setup_logging():
     global _CRASH_FH
     if "--headless" in sys.argv:
-        base_dir = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+        base_dir = os.environ.get("PROGRAMDATA")
+        if not base_dir:
+            base_dir = r"C:\ProgramData" if sys.platform == "win32" else tempfile.gettempdir()
         log_dir = os.path.join(base_dir, "USBRelay", "logs")
     else:
         appdata = os.environ.get("APPDATA", os.path.expanduser("~"))

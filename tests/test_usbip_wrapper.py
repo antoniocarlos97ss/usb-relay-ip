@@ -36,6 +36,21 @@ class TestUsbipWrapper(unittest.TestCase):
             result = attach_device("192.168.1.10", "1-5")
             self.assertFalse(result.success)
 
+    def test_attach_device_records_windows_pnp_correlation_when_identity_known(self):
+        with patch("client.core.usbip_wrapper._run_command") as mock_run, \
+             patch("client.core.usbip_wrapper.sys.platform", "win32"), \
+             patch("client.core.windows_pnp.snapshot_usb_devices") as snapshot, \
+             patch("client.core.windows_pnp.register_attached_session") as register:
+            mock_run.return_value = (0, "attached", "")
+            snapshot.return_value = object()
+            register.return_value = (True, "vidpid-delta")
+            from client.core.usbip_wrapper import attach_device
+            result = attach_device("192.168.1.10", "1-5", vid="1234", pid="abcd")
+
+            self.assertTrue(result.success)
+            snapshot.assert_called_once()
+            register.assert_called_once()
+
     def test_detach_device_success(self):
         with patch("client.core.usbip_wrapper._run_command") as mock_run:
             mock_run.return_value = (0, "detached", "")

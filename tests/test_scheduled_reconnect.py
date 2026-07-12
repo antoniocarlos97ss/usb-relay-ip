@@ -224,7 +224,7 @@ class TestScheduledReconnectCycle(unittest.TestCase):
         mock_usbip.detach_device.assert_called_once_with(3)
         api_client.unbind_device.assert_called_once_with("1-5")
         api_client.bind_device.assert_called_once_with("1-5")
-        mock_usbip.attach_device.assert_called_once_with("192.168.1.10", "1-5")
+        mock_usbip.attach_device.assert_called_once_with("192.168.1.10", "1-5", vid="046d", pid="c31c")
         self.assertEqual(mock_sleep.call_args_list, [call(2), call(2)])
         mock_cfg.save_config.assert_called_once()
 

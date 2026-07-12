@@ -162,7 +162,12 @@ def run_headless():
 
             if matched and matched.state == "Shared":
                 logger.info(f"Attaching {matched.busid}")
-                result = usbip_wrapper.attach_device(config.host_ip, matched.busid)
+                result = usbip_wrapper.attach_device(
+                    config.host_ip,
+                    matched.busid,
+                    vid=matched.vid,
+                    pid=matched.pid,
+                )
                 if result.success:
                     logger.info(f"Attached {matched.busid}")
                 else:
@@ -172,7 +177,12 @@ def run_headless():
                     time.sleep(2)
                     api_client.bind_device(matched.busid)
                     time.sleep(2)
-                    result2 = usbip_wrapper.attach_device(config.host_ip, matched.busid)
+                    result2 = usbip_wrapper.attach_device(
+                        config.host_ip,
+                        matched.busid,
+                        vid=matched.vid,
+                        pid=matched.pid,
+                    )
                     if result2.success:
                         logger.info(f"Attached {matched.busid} after unbind+rebind")
                     else:

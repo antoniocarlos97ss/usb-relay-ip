@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from typing import Optional
 
 from shared.constants import USBIP_EXE
@@ -12,6 +13,7 @@ from shared.models import AttachedDevice, CommandResult
 logger = logging.getLogger(__name__)
 
 _subprocesses: list[subprocess.Popen] = []
+_pnp_attach_lock = threading.Lock()
 
 
 def _register_proc(proc: subprocess.Popen):
@@ -135,9 +137,28 @@ def list_remote_devices(host_ip: str) -> list[dict]:
     return devices
 
 
-def attach_device(host_ip: str, busid: str) -> CommandResult:
+def _attach_device_locked(
+    host_ip: str,
+    busid: str,
+    timeout: int = 30,
+    vid: str = "",
+    pid: str = "",
+) -> CommandResult:
+    before_snapshot = None
+    if vid and pid and sys.platform == "win32":
+        try:
+            from client.core import windows_pnp
+            before_snapshot = windows_pnp.snapshot_usb_devices(timeout=min(2, max(1, timeout)))
+            if before_snapshot is None and timeout >= 3:
+                before_snapshot = windows_pnp.snapshot_usb_devices(timeout=3)
+            if before_snapshot is None:
+                logger.warning("PnP correlation disabled for %s: pre-attach snapshot timed out", busid)
+        except Exception:
+            logger.exception("Failed to capture pre-attach PnP snapshot for %s", busid)
+
     returncode, stdout, stderr = _run_command(
-        ["attach", "-r", host_ip, "-b", busid]
+        ["attach", "-r", host_ip, "-b", busid],
+        timeout=timeout,
     )
     success = returncode == 0
     if success:
@@ -145,12 +166,47 @@ def attach_device(host_ip: str, busid: str) -> CommandResult:
     else:
         detail = stderr.strip() or stdout.strip()
         message = f"Failed to attach {busid}: {detail}" if detail else f"Failed to attach device {busid} from {host_ip}."
+    if success and before_snapshot is not None:
+        try:
+            from client.core import windows_pnp
+            mapped, reason = windows_pnp.register_attached_session(
+                busid,
+                vid,
+                pid,
+                before_snapshot,
+                poll_timeout=min(3, max(2, timeout)),
+            )
+            if not mapped:
+                logger.warning("Attached %s but PnP correlation was not recorded safely: %s", busid, reason)
+        except Exception:
+            logger.exception("Failed to record PnP correlation for %s", busid)
     return CommandResult(success=success, message=message, stdout=stdout, stderr=stderr)
 
 
-def detach_device(port: int) -> CommandResult:
+def attach_device(
+    host_ip: str,
+    busid: str,
+    timeout: int = 30,
+    vid: str = "",
+    pid: str = "",
+) -> CommandResult:
+    if vid and pid and sys.platform == "win32":
+        if not _pnp_attach_lock.acquire(timeout=max(1, timeout)):
+            return CommandResult(
+                success=False,
+                message=f"Timed out waiting to attach {busid}; another PnP attach is running.",
+            )
+        try:
+            return _attach_device_locked(host_ip, busid, timeout, vid, pid)
+        finally:
+            _pnp_attach_lock.release()
+    return _attach_device_locked(host_ip, busid, timeout, vid, pid)
+
+
+def detach_device(port: int, timeout: int = 30) -> CommandResult:
     returncode, stdout, stderr = _run_command(
-        ["detach", "-p", str(port)]
+        ["detach", "-p", str(port)],
+        timeout=timeout,
     )
     success = returncode == 0
     if success:
@@ -160,8 +216,8 @@ def detach_device(port: int) -> CommandResult:
     return CommandResult(success=success, message=message, stdout=stdout, stderr=stderr)
 
 
-def list_attached() -> list[AttachedDevice]:
-    returncode, stdout, _ = _run_command(["port"])
+def list_attached(timeout: int = 30) -> list[AttachedDevice]:
+    returncode, stdout, _ = _run_command(["port"], timeout=timeout)
     if returncode != 0 or not stdout.strip():
         return []
 
@@ -190,8 +246,8 @@ def list_attached() -> list[AttachedDevice]:
     return attached
 
 
-def find_port_for_busid(busid: str) -> Optional[int]:
-    attached = list_attached()
+def find_port_for_busid(busid: str, timeout: int = 30) -> Optional[int]:
+    attached = list_attached(timeout=timeout)
     for dev in attached:
         if dev.busid == busid:
             return dev.port

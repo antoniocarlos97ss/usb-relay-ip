@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 from typing import Optional
 
 from shared.constants import CONFIG_DIR_NAME, HOST_CONFIG_FILE
@@ -19,7 +20,9 @@ def _config_dir() -> str:
 
 
 def _programdata_dir() -> str:
-    pd = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    pd = os.environ.get("PROGRAMDATA")
+    if not pd:
+        pd = r"C:\ProgramData" if sys.platform == "win32" else tempfile.gettempdir()
     path = os.path.join(pd, CONFIG_DIR_NAME)
     os.makedirs(path, exist_ok=True)
     return path
