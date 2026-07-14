@@ -12,6 +12,7 @@ from client.core.windows_pnp import (
     _parse_statuses,
     clear_session_correlations,
     find_code43,
+    find_descriptor_failure_code43,
     find_session_code43,
     find_unknown_code43,
     get_busid_for_instance_id,
@@ -177,6 +178,90 @@ class WindowsPnpTests(unittest.TestCase):
         )
 
         self.assertEqual([], matched)
+
+    def _register_session(self, busid: str, vid: str, pid: str, instance_id: str):
+        before = PnpSnapshot(devices=tuple(), observed_at=1.0)
+        payload = json.dumps([{"PNPDeviceID": instance_id, "ConfigManagerErrorCode": 0}])
+        with unittest.mock.patch("client.core.windows_pnp.sys.platform", "win32"), \
+             unittest.mock.patch("client.core.windows_pnp.snapshot_usb_devices") as snapshot:
+            snapshot.return_value = PnpSnapshot(devices=tuple(_parse_statuses(payload)), observed_at=2.0)
+            ok, _ = register_attached_session(busid, vid, pid, before, poll_timeout=1)
+        self.assertTrue(ok)
+
+    def test_find_unknown_code43_includes_descriptor_failure(self):
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": r"USB\VID_0000&PID_0002\5&104B56B8&0&2",
+            "Name": "Unknown USB Device (Device Descriptor Request Failed)",
+            "ConfigManagerErrorCode": 43,
+            "Status": "Error",
+        }]))
+
+        self.assertEqual(statuses, find_unknown_code43(statuses))
+        self.assertEqual(statuses, find_descriptor_failure_code43(statuses))
+        self.assertEqual([], find_code43("1234", "abcd", statuses))
+
+    def test_find_session_code43_attributes_reenumerated_descriptor_failure(self):
+        self._register_session("1-2", "1234", "abcd", r"USB\VID_1234&PID_ABCD\TOKEN")
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": r"USB\VID_0000&PID_0002\5&104B56B8&0&2",
+            "ConfigManagerErrorCode": 43,
+        }]))
+
+        matched = find_session_code43(
+            "1-2",
+            "1234",
+            "abcd",
+            statuses,
+            [AttachedDevice(port=1, busid="1-2", vid="1234", pid="abcd")],
+        )
+
+        self.assertEqual(
+            [r"USB\VID_0000&PID_0002\5&104B56B8&0&2"],
+            [item.instance_id for item in matched],
+        )
+
+    def test_find_session_code43_ignores_descriptor_failure_while_session_node_present(self):
+        self._register_session("1-2", "1234", "abcd", r"USB\VID_1234&PID_ABCD\TOKEN")
+        statuses = _parse_statuses(json.dumps([
+            {"PNPDeviceID": r"USB\VID_1234&PID_ABCD\TOKEN", "ConfigManagerErrorCode": 0},
+            {"PNPDeviceID": r"USB\VID_0000&PID_0002\5&104B56B8&0&2", "ConfigManagerErrorCode": 43},
+        ]))
+
+        matched = find_session_code43(
+            "1-2",
+            "1234",
+            "abcd",
+            statuses,
+            [AttachedDevice(port=1, busid="1-2", vid="1234", pid="abcd")],
+        )
+
+        self.assertEqual([], matched)
+
+    def test_descriptor_failure_without_correlation_requires_single_session(self):
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": r"USB\VID_0000&PID_0002\5&104B56B8&0&2",
+            "ConfigManagerErrorCode": 43,
+        }]))
+        single = [AttachedDevice(port=1, busid="1-2", vid="1234", pid="abcd")]
+        multiple = single + [AttachedDevice(port=2, busid="1-3", vid="9999", pid="0001")]
+
+        self.assertEqual(statuses, find_session_code43("1-2", "1234", "abcd", statuses, single))
+        self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, multiple))
+
+    def test_descriptor_failure_not_attributed_when_multiple_sessions_vanished(self):
+        self._register_session("1-2", "1234", "abcd", r"USB\VID_1234&PID_ABCD\TOKEN")
+        self._register_session("1-3", "9999", "0001", r"USB\VID_9999&PID_0001\OTHER")
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": r"USB\VID_0000&PID_0002\5&104B56B8&0&2",
+            "ConfigManagerErrorCode": 43,
+        }]))
+        attached = [
+            AttachedDevice(port=1, busid="1-2", vid="1234", pid="abcd"),
+            AttachedDevice(port=2, busid="1-3", vid="9999", pid="0001"),
+        ]
+
+        self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, attached))
+        self.assertEqual([], find_session_code43("1-3", "9999", "0001", statuses, attached))
 
     def test_session_correlation_persists_across_memory_reset(self):
         import client.core.windows_pnp as windows_pnp

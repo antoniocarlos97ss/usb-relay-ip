@@ -98,23 +98,125 @@ class PnpRecoveryTests(unittest.TestCase):
     @patch("client.core.pnp_recovery.usbip_wrapper.list_attached")
     @patch("client.core.pnp_recovery.windows_pnp.get_correlated_statuses")
     @patch("client.core.pnp_recovery.windows_pnp.list_usb_devices")
-    def test_validation_requires_healthy_correlated_instance(
+    def test_validation_stays_strict_while_correlated_instance_is_failing(
         self, list_usb_devices, correlated, list_attached, monotonic, sleep
+    ):
+        list_attached.return_value = [AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd")]
+        broken = PnpDeviceStatus(
+            instance_id=r"USB\VID_1234&PID_ABCD\TOKEN",
+            name="Token",
+            problem_code=43,
+            status="Error",
+            vid="1234",
+            pid="abcd",
+        )
+        healthy_other = PnpDeviceStatus(
+            instance_id=r"USB\VID_1234&PID_ABCD\OTHER",
+            name="Other token",
+            problem_code=0,
+            status="OK",
+            vid="1234",
+            pid="abcd",
+        )
+        list_usb_devices.return_value = [broken, healthy_other]
+        correlated.return_value = [broken]
+
+        self.assertFalse(_wait_pnp_healthy(self.device, 0.5))
+
+    @patch("client.core.pnp_recovery.time.sleep")
+    @patch("client.core.pnp_recovery.usbip_wrapper.list_attached")
+    @patch("client.core.pnp_recovery.windows_pnp.get_correlated_statuses", return_value=[])
+    @patch("client.core.pnp_recovery.windows_pnp.list_usb_devices")
+    def test_validation_falls_back_to_exact_vid_pid_without_correlation(
+        self, list_usb_devices, correlated, list_attached, sleep
     ):
         list_attached.return_value = [AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd")]
         list_usb_devices.return_value = [
             PnpDeviceStatus(
-                instance_id=r"USB\VID_1234&PID_ABCD\OTHER",
-                name="Other token",
+                instance_id=r"USB\VID_1234&PID_ABCD\TOKEN",
+                name="Token",
                 problem_code=0,
                 status="OK",
                 vid="1234",
                 pid="abcd",
             )
         ]
-        correlated.return_value = []
+
+        self.assertTrue(_wait_pnp_healthy(self.device, time.monotonic() + 5))
+
+    @patch("client.core.pnp_recovery.time.sleep")
+    @patch("client.core.pnp_recovery.time.monotonic", side_effect=[0.0, 0.1, 1.0])
+    @patch("client.core.pnp_recovery.usbip_wrapper.list_attached")
+    @patch("client.core.pnp_recovery.windows_pnp.get_correlated_statuses", return_value=[])
+    @patch("client.core.pnp_recovery.windows_pnp.list_usb_devices")
+    def test_validation_fallback_rejects_failing_exact_identity(
+        self, list_usb_devices, correlated, list_attached, monotonic, sleep
+    ):
+        list_attached.return_value = [AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd")]
+        list_usb_devices.return_value = [
+            PnpDeviceStatus(
+                instance_id=r"USB\VID_1234&PID_ABCD\TOKEN",
+                name="Token",
+                problem_code=43,
+                status="Error",
+                vid="1234",
+                pid="abcd",
+            )
+        ]
 
         self.assertFalse(_wait_pnp_healthy(self.device, 0.5))
+
+    @patch("client.core.pnp_recovery.time.sleep")
+    @patch("client.core.pnp_recovery._wait_pnp_healthy", side_effect=[False, True])
+    @patch("client.core.pnp_recovery._wait_host_shared", return_value=True)
+    @patch("client.core.pnp_recovery.usbip_wrapper.attach_device")
+    @patch("client.core.pnp_recovery.usbip_wrapper.detach_device")
+    @patch("client.core.pnp_recovery._matching_attached")
+    def test_second_attempt_cycles_host_binding(
+        self, matching, detach, attach, wait_shared, wait_healthy, sleep
+    ):
+        matching.return_value = AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd")
+        detach.return_value = CommandResult(success=True, message="detached")
+        attach.return_value = CommandResult(success=True, message="attached")
+        api = Mock(host_ip="10.0.0.1")
+        api.unbind_device.return_value = True
+        api.bind_device.return_value = True
+
+        success, _ = recover_device(api, self.device)
+
+        self.assertTrue(success)
+        api.unbind_device.assert_called_once_with("1-2")
+        api.bind_device.assert_called_once_with("1-2")
+
+    @patch("client.core.pnp_recovery.time.sleep")
+    @patch("client.core.pnp_recovery._wait_pnp_healthy", return_value=True)
+    @patch("client.core.pnp_recovery._wait_host_shared", return_value=True)
+    @patch("client.core.pnp_recovery.usbip_wrapper.attach_device")
+    @patch("client.core.pnp_recovery.usbip_wrapper.detach_device")
+    @patch("client.core.pnp_recovery._matching_attached")
+    def test_failed_attach_escalates_without_detach(
+        self, matching, detach, attach, wait_shared, wait_healthy, sleep
+    ):
+        matching.side_effect = [
+            AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd"),
+            None,
+        ]
+        detach.return_value = CommandResult(success=True, message="detached")
+        attach.side_effect = [
+            CommandResult(success=False, message="attach failed"),
+            CommandResult(success=True, message="attached"),
+        ]
+        api = Mock(host_ip="10.0.0.1")
+        api.unbind_device.return_value = True
+        api.bind_device.return_value = True
+
+        success, _ = recover_device(api, self.device)
+
+        self.assertTrue(success)
+        detach.assert_called_once()
+        self.assertEqual(2, attach.call_count)
+        api.unbind_device.assert_called_once_with("1-2")
+        api.bind_device.assert_called_once_with("1-2")
 
     @patch("client.core.pnp_recovery.recover_device", return_value=(True, "ok"))
     @patch("client.core.pnp_recovery.usbip_wrapper.list_attached")

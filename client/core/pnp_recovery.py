@@ -11,9 +11,9 @@ from shared.models import UsbDevice
 
 logger = logging.getLogger(__name__)
 
-POLL_SECONDS = 2
+POLL_SECONDS = 10
 CONFIRM_SAMPLES = 2
-RECOVERY_DEADLINE_SECONDS = 50
+RECOVERY_DEADLINE_SECONDS = 90
 WAIT_SHARED_SECONDS = 6
 VALIDATE_SECONDS = 15
 SUCCESS_COOLDOWN_SECONDS = 60
@@ -46,6 +46,7 @@ def _wait_pnp_healthy(
     deadline: float,
     cancel_event: threading.Event | None = None,
 ) -> bool:
+    key = device.vid.lower(), device.pid.lower()
     target_attached = False
     while time.monotonic() < deadline and not (cancel_event and cancel_event.is_set()):
         if not target_attached:
@@ -56,15 +57,24 @@ def _wait_pnp_healthy(
                 time.sleep(0.5)
                 continue
         remaining = max(1, int(deadline - time.monotonic()))
-        statuses = windows_pnp.list_usb_devices(timeout=min(5, remaining))
+        statuses = windows_pnp.list_usb_devices(timeout=min(5, remaining), include_properties=False)
         if statuses is not None:
             correlated = windows_pnp.get_correlated_statuses(device.busid, statuses)
-            healthy_correlated = [
-                item for item in correlated
-                if item.problem_code == 0 and (item.vid, item.pid) == (device.vid.lower(), device.pid.lower())
-            ]
-            if target_attached and healthy_correlated:
-                return True
+            if correlated:
+                healthy_correlated = [
+                    item for item in correlated
+                    if item.problem_code == 0 and (item.vid, item.pid) == key
+                ]
+                if healthy_correlated:
+                    return True
+            else:
+                # Correlation registration is best-effort; without it, accept an
+                # exact VID/PID devnode as long as no sibling with the same
+                # identity is failing. A descriptor-failure re-enumeration would
+                # leave no healthy exact node, so this cannot mask that case.
+                exact = [item for item in statuses if (item.vid, item.pid) == key]
+                if exact and all(item.problem_code == 0 for item in exact):
+                    return True
         time.sleep(1)
     return False
 
@@ -84,19 +94,38 @@ def recover_device(
             if cancel_event and cancel_event.is_set():
                 return False, "recovery interrupted during shutdown"
             attached = _matching_attached(device, timeout=3)
-            if attached is None:
+            if attached is None and attempt == 1:
                 return False, "local USB/IP session could not be identified unambiguously"
 
-            logger.warning(
-                "PnP Code 43 recovery attempt %s for %s (%s:%s), port %s",
-                attempt, device.busid, device.vid, device.pid, attached.port,
-            )
-            remaining = int(deadline - time.monotonic())
-            if remaining < 5:
-                return False, "recovery deadline reached before detach"
-            detached = usbip_wrapper.detach_device(attached.port, timeout=min(5, remaining))
-            if not detached.success:
-                return False, detached.message
+            if attached is not None:
+                logger.warning(
+                    "PnP Code 43 recovery attempt %s for %s (%s:%s), port %s",
+                    attempt, device.busid, device.vid, device.pid, attached.port,
+                )
+                remaining = int(deadline - time.monotonic())
+                if remaining < 5:
+                    return False, "recovery deadline reached before detach"
+                detached = usbip_wrapper.detach_device(attached.port, timeout=min(5, remaining))
+                if not detached.success:
+                    return False, detached.message
+            else:
+                # The previous attach attempt failed, so the session is already
+                # detached; escalate on the host and try to attach again.
+                logger.warning(
+                    "PnP Code 43 recovery attempt %s for %s (%s:%s): session already detached",
+                    attempt, device.busid, device.vid, device.pid,
+                )
+
+            if attempt >= 2:
+                logger.warning("Escalating PnP recovery for %s: cycling host binding", device.busid)
+                if api_client.unbind_device(device.busid):
+                    if not api_client.bind_device(device.busid):
+                        return False, "host bind failed during escalated recovery"
+                else:
+                    logger.warning(
+                        "Host unbind failed for %s during escalation; retrying attach anyway",
+                        device.busid,
+                    )
 
             shared_deadline = min(deadline, time.monotonic() + WAIT_SHARED_SECONDS)
             if not _wait_host_shared(api_client, device.busid, shared_deadline, cancel_event):
@@ -174,7 +203,7 @@ class PnpRecoveryMonitor(QThread):
                 time.sleep(0.1)
 
     def _check_once(self):
-        statuses = windows_pnp.list_usb_devices()
+        statuses = windows_pnp.list_usb_devices(include_properties=False)
         if statuses is None:
             return
         attached_devices = usbip_wrapper.list_attached(timeout=2)
@@ -182,25 +211,10 @@ class PnpRecoveryMonitor(QThread):
             devices = [device for device in self._devices if device.state == "Attached"]
 
         now = time.monotonic()
-        unknown = windows_pnp.find_unknown_code43(statuses)
-        reportable = [
-            item for item in unknown
-            if windows_pnp.get_busid_for_instance_id(item.instance_id) is None
-            and now - self._unknown_logged_at.get(item.instance_id, 0) >= 60
-        ]
-        if reportable:
-            logger.error(
-                "PnP Code 43 detected without VID/PID; automatic recovery skipped because "
-                "the USB/IP session cannot be identified safely: %s",
-                ", ".join(item.instance_id for item in reportable),
-            )
-            for item in reportable:
-                self._unknown_logged_at[item.instance_id] = now
+        attributed_ids: set[str] = set()
 
         for device in devices:
             key = device.busid
-            if now < self._cooldown_until.get(key, 0):
-                continue
             failures = windows_pnp.find_session_code43(
                 device.busid,
                 device.vid,
@@ -208,6 +222,9 @@ class PnpRecoveryMonitor(QThread):
                 statuses,
                 attached_devices,
             )
+            attributed_ids.update(str(item.instance_id).strip().upper() for item in failures)
+            if now < self._cooldown_until.get(key, 0):
+                continue
             if not failures:
                 self._fail_samples.pop(key, None)
                 continue
@@ -227,6 +244,22 @@ class PnpRecoveryMonitor(QThread):
                 )
                 self._recovery_threads[device.busid] = worker
             worker.start()
+
+        unknown = windows_pnp.find_unknown_code43(statuses)
+        reportable = [
+            item for item in unknown
+            if str(item.instance_id).strip().upper() not in attributed_ids
+            and windows_pnp.get_busid_for_instance_id(item.instance_id) is None
+            and now - self._unknown_logged_at.get(item.instance_id, 0) >= 60
+        ]
+        if reportable:
+            logger.error(
+                "PnP Code 43 detected without VID/PID; automatic recovery skipped because "
+                "the USB/IP session cannot be identified safely: %s",
+                ", ".join(item.instance_id for item in reportable),
+            )
+            for item in reportable:
+                self._unknown_logged_at[item.instance_id] = now
 
     def _recover_in_background(self, device: UsbDevice):
         try:

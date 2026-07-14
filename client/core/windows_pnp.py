@@ -12,8 +12,8 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 _VID_PID_RE = re.compile(r"VID_([0-9A-F]{4}).*PID_([0-9A-F]{4})", re.IGNORECASE)
-_QUERY = r"""
-$hasPnpProps = $null -ne (Get-Command Get-PnpDeviceProperty -ErrorAction SilentlyContinue)
+_QUERY_TEMPLATE = r"""
+$hasPnpProps = __INCLUDE_PROPS__ -and ($null -ne (Get-Command Get-PnpDeviceProperty -ErrorAction SilentlyContinue))
 $devices = Get-CimInstance -ClassName Win32_PnPEntity | Where-Object {
     $_.PNPDeviceID -like 'USB\*' -or $_.PNPDeviceID -like 'ROOT\USBIP*'
 }
@@ -45,9 +45,16 @@ $items = foreach ($device in $devices) {
 }
 @($items) | ConvertTo-Json -Compress -Depth 4
 """.strip()
+_QUERY_FULL = _QUERY_TEMPLATE.replace("__INCLUDE_PROPS__", "$true")
+_QUERY_FAST = _QUERY_TEMPLATE.replace("__INCLUDE_PROPS__", "$false")
 
 _USB_UNKNOWN_PREFIX = "USB\\UNKNOWN"
 _USBIP_ROOT_PREFIX = "ROOT\\USBIP"
+# Windows re-enumerates a device whose descriptor read failed (Code 43,
+# "Device Descriptor Request Failed") as USB\VID_0000&PID_0002 or with a
+# DEVICE_DESCRIPTOR_FAILURE hardware id, replacing the original devnode.
+_DESCRIPTOR_FAILURE_PREFIX = "USB\\VID_0000&PID_0002"
+_DESCRIPTOR_FAILURE_MARKER = "DEVICE_DESCRIPTOR_FAILURE"
 _SESSION_LOCK = threading.Lock()
 _SESSION_CORRELATIONS: dict[str, "SessionCorrelation"] = {}
 _SESSION_CORRELATIONS_LOADED = False
@@ -182,6 +189,14 @@ def _is_usbip_root_device(status: PnpDeviceStatus) -> bool:
     return _normalize_instance_id(status.instance_id).startswith(_USBIP_ROOT_PREFIX)
 
 
+def _is_descriptor_failure_device(status: PnpDeviceStatus) -> bool:
+    normalized = _normalize_instance_id(status.instance_id)
+    return (
+        normalized.startswith(_DESCRIPTOR_FAILURE_PREFIX)
+        or _DESCRIPTOR_FAILURE_MARKER in normalized
+    )
+
+
 def _is_session_candidate(status: PnpDeviceStatus) -> bool:
     return bool(status.instance_id) and (
         bool(status.vid and status.pid)
@@ -265,7 +280,7 @@ def _derive_correlation(
     else:
         unknown_components = [
             component for component in components
-            if any(_is_unknown_device(item) for item in component)
+            if any(_is_unknown_device(item) or _is_descriptor_failure_device(item) for item in component)
         ]
         if len(components) != 1 or len(unknown_components) != 1:
             return None
@@ -314,7 +329,7 @@ def _parse_statuses(payload: str) -> list[PnpDeviceStatus]:
     return statuses
 
 
-def list_usb_devices(timeout: int = 5) -> list[PnpDeviceStatus] | None:
+def list_usb_devices(timeout: int = 5, include_properties: bool = True) -> list[PnpDeviceStatus] | None:
     if sys.platform != "win32":
         return None
     try:
@@ -326,7 +341,7 @@ def list_usb_devices(timeout: int = 5) -> list[PnpDeviceStatus] | None:
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                _QUERY,
+                _QUERY_FULL if include_properties else _QUERY_FAST,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -382,7 +397,17 @@ def find_code43(vid: str, pid: str, statuses: list[PnpDeviceStatus]) -> list[Pnp
 
 
 def find_unknown_code43(statuses: list[PnpDeviceStatus]) -> list[PnpDeviceStatus]:
-    return [item for item in statuses if not item.vid and item.problem_code == 43]
+    return [
+        item for item in statuses
+        if item.problem_code == 43 and (not item.vid or _is_descriptor_failure_device(item))
+    ]
+
+
+def find_descriptor_failure_code43(statuses: list[PnpDeviceStatus]) -> list[PnpDeviceStatus]:
+    return [
+        item for item in statuses
+        if item.problem_code == 43 and _is_descriptor_failure_device(item)
+    ]
 
 
 def clear_session_correlations() -> None:
@@ -457,6 +482,40 @@ def register_attached_session(
     return False, "attach did not produce an unambiguous PnP delta"
 
 
+def _find_reenumerated_code43(
+    busid: str,
+    correlation: SessionCorrelation | None,
+    statuses: list[PnpDeviceStatus],
+    attached_devices,
+) -> list[PnpDeviceStatus]:
+    failures = [
+        item for item in find_descriptor_failure_code43(statuses)
+        if get_busid_for_instance_id(item.instance_id) in (None, busid)
+    ]
+    if not failures:
+        return []
+
+    if correlation is None:
+        # Without a recorded correlation the failure node can only be
+        # attributed safely when this is the sole attached session.
+        attached = list(attached_devices)
+        if len(attached) == 1 and attached[0].busid == busid:
+            return failures
+        return []
+
+    present_ids = {_normalize_instance_id(item.instance_id) for item in statuses}
+
+    def _correlated_nodes_vanished(session_busid: str) -> bool:
+        session = get_session_correlation(session_busid)
+        return session is not None and not set(session.instance_ids) & present_ids
+
+    if not _correlated_nodes_vanished(busid):
+        return []
+    if any(item.busid != busid and _correlated_nodes_vanished(item.busid) for item in attached_devices):
+        return []
+    return failures
+
+
 def find_session_code43(
     busid: str,
     vid: str,
@@ -467,6 +526,7 @@ def find_session_code43(
     correlation = get_session_correlation(busid)
     if correlation and (correlation.vid, correlation.pid) != (vid.lower(), pid.lower()):
         remove_session_correlation(busid)
+        correlation = None
     correlated = [item for item in get_correlated_statuses(busid, statuses) if item.problem_code == 43]
     if correlated:
         return correlated
@@ -478,4 +538,5 @@ def find_session_code43(
     ]
     if len(same_vid_pid) == 1 and same_vid_pid[0].busid == busid and len(exact) == 1:
         return exact
-    return []
+
+    return _find_reenumerated_code43(busid, correlation, statuses, attached_devices)
