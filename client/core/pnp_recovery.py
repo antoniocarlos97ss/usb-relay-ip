@@ -481,7 +481,12 @@ class _PnpRecoveryState:
                     daemon=False,
                 )
                 self._recovery_threads[device.busid] = worker
-                worker.start()
+                try:
+                    worker.start()
+                except Exception:
+                    if self._recovery_threads.get(device.busid) is worker:
+                        self._recovery_threads.pop(device.busid, None)
+                    raise
 
         unknown = windows_pnp.find_unknown_code43(statuses)
         reportable = [

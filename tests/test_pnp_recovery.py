@@ -385,6 +385,52 @@ class PnpRecoveryTests(unittest.TestCase):
         self.assertFalse(thread_factory.call_args.kwargs["daemon"])
         worker.start.assert_called_once_with()
 
+    @patch("client.core.pnp_recovery.threading.Thread")
+    @patch("client.core.pnp_recovery.windows_pnp.find_unknown_code43", return_value=[])
+    @patch("client.core.pnp_recovery.windows_pnp.find_session_code43")
+    @patch("client.core.pnp_recovery.windows_pnp.list_usb_devices")
+    @patch("client.core.pnp_recovery.usbip_wrapper.query_attached_devices")
+    def test_worker_start_failure_removes_unjoinable_recovery_entry(
+        self,
+        local_query,
+        list_usb_devices,
+        find_session_code43,
+        find_unknown_code43,
+        thread_factory,
+    ):
+        from client.core.usbip_wrapper import AttachedDevicesQuery
+
+        broken = PnpDeviceStatus(
+            instance_id=r"USB\VID_1234&PID_ABCD\TOKEN",
+            name="Token",
+            problem_code=43,
+            status="Error",
+            vid="1234",
+            pid="abcd",
+        )
+        local_query.return_value = AttachedDevicesQuery(
+            True,
+            (AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd"),),
+        )
+        list_usb_devices.return_value = [broken]
+        find_session_code43.return_value = [broken]
+        worker = Mock()
+        worker.start.side_effect = RuntimeError("can't start new thread")
+        thread_factory.return_value = worker
+        monitor = PnpRecoveryMonitor(Mock(host_ip="10.0.0.1", host_port=5757, api_key=""))
+        monitor._running = True
+        monitor.update_devices([self.device])
+        monitor._fail_samples[self.device.busid] = 1
+
+        with self.assertRaisesRegex(RuntimeError, "can't start new thread"):
+            monitor._check_once()
+
+        self.assertNotIn(self.device.busid, monitor._recovery_threads)
+        with patch("client.core.pnp_recovery.windows_pnp.kill_all_queries"), \
+             patch("client.core.pnp_recovery.usbip_wrapper.kill_all_subprocesses"):
+            monitor.stop()
+        worker.join.assert_not_called()
+
     def test_concurrent_stop_waits_for_worker_start_and_never_joins_unstarted_thread(self):
         from client.core.usbip_wrapper import AttachedDevicesQuery
 
