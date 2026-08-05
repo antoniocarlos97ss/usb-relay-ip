@@ -64,8 +64,8 @@ $attempt = $env:GITHUB_RUN_ATTEMPT
 if ([string]::IsNullOrWhiteSpace($attempt)) { $attempt = '1' }
 $taskName = "USBRelayClientCI-$runId-$attempt"
 $root = Join-Path $env:ProgramData ("USBRelay\" + $taskName)
-$programDataRoot = $env:ProgramData
-$sharedState = $root
+$programDataRoot = $root
+$sharedState = Join-Path $programDataRoot 'USBRelay'
 $legacyChild = Join-Path $sharedState 'legacy\nested.json'
 $markerPath = Join-Path $sharedState 'system-probe.json'
 $xmlPath = Join-Path $sharedState 'system-task.xml'
@@ -124,8 +124,18 @@ try {
     Write-Host 'Windows ACL, SYSTEM Task Scheduler, msvcrt lock, and PnP integration checks passed.'
 }
 finally {
-    & schtasks.exe /End /TN $taskName 2>$null | Out-Null
-    & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+    try {
+        & schtasks.exe /End /TN $taskName 2>&1 | Out-Null
+    }
+    catch {
+        Write-Host "Temporary task was not running: $($_.Exception.Message)"
+    }
+    try {
+        & schtasks.exe /Delete /TN $taskName /F 2>&1 | Out-Null
+    }
+    catch {
+        Write-Host "Temporary task did not exist: $($_.Exception.Message)"
+    }
     if (Test-Path -LiteralPath $root) {
         Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

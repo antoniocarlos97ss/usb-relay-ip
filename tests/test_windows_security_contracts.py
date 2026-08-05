@@ -51,6 +51,11 @@ class WindowsInstallerSecurityContracts(unittest.TestCase):
         self.assertIn("ApplicationData", self.acl_script)
         self.assertIn("OrdinalIgnoreCase", self.acl_script)
         self.assertIn("StartsWith", self.acl_script)
+        self.assertIn("function Remove-Win32ExtendedPathPrefix", self.acl_script)
+
+    def test_installer_helper_provisions_the_protected_operation_lock_directory(self):
+        self.assertIn("'operation-locks'", self.acl_script)
+        self.assertIn("CreateDirectory($operationLocks.FullName)", self.acl_script)
 
     def test_acl_operations_recheck_nodes_before_set_or_remove(self):
         self.assertIn("Get-Item -LiteralPath", self.acl_script)

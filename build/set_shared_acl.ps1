@@ -15,10 +15,27 @@ function Test-ReparsePoint {
     return (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
 }
 
+function Remove-Win32ExtendedPathPrefix {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return '\\' + $Path.Substring(8)
+    }
+    if ($Path.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $Path.Substring(4)
+    }
+    return $Path
+}
+
 function Get-NormalizedPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    return [System.IO.Path]::GetFullPath($Path).TrimEnd('\\')
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullPath = Remove-Win32ExtendedPathPrefix -Path $fullPath
+    return $fullPath.TrimEnd([char[]]@(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    ))
 }
 
 function Get-SpecialFolderPath {
@@ -254,6 +271,23 @@ if (-not $target.Exists) {
 # an ordinary user can no longer create or replace entries while this process
 # applies the inherited rules below.
 Set-SafeAcl -Path $target.FullName -AclObject (New-UsbRelayAcl -IsDirectory $true)
+
+# Runtime code deliberately never creates a shared lock root.  Provision it
+# here, after the parent DACL is protected, so SYSTEM and the installing GUI
+# user serialize transport mutations through the same safe directory.
+$operationLocks = [System.IO.DirectoryInfo]::new(
+    [System.IO.Path]::Combine($target.FullName, 'operation-locks')
+)
+if ([System.IO.File]::Exists($operationLocks.FullName)) {
+    throw "Operation lock path is a file: $($operationLocks.FullName)"
+}
+if (-not $operationLocks.Exists) {
+    [System.IO.Directory]::CreateDirectory($operationLocks.FullName) | Out-Null
+}
+$operationLocks = Get-SafeExistingNode -Path $operationLocks.FullName
+if ($operationLocks -isnot [System.IO.DirectoryInfo]) {
+    throw "Operation lock path is not a directory: $($operationLocks.FullName)"
+}
 
 $nodes = @(Get-SafeFileSystemNodes -Root $target |
     Where-Object { $_.FullName -ine $target.FullName })

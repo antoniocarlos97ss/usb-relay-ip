@@ -26,6 +26,9 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("windows-2022", source)
         self.assertIn("windows-2025", source)
         self.assertIn("python -m unittest discover -s tests -v", source)
+        self.assertIn("Prepare isolated ProgramData for unit tests", source)
+        self.assertIn("operation-locks", source)
+        self.assertIn("GITHUB_ENV", source)
         self.assertIn("python -m compileall -q client host shared tests ci", source)
         self.assertIn("ci\\windows_integration.ps1", source)
         self.assertIn("actions/checkout@v7", source)
@@ -49,6 +52,8 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("list_usb_devices", source)
         self.assertIn("try_acquire_named", probe)
         self.assertIn("_render_boot_task_xml", renderer)
+        self.assertIn("$programDataRoot = $root", source)
+        self.assertIn("$sharedState = Join-Path $programDataRoot 'USBRelay'", source)
 
     def test_hardware_pilot_is_manual_approved_and_self_hosted_only(self):
         source = (WORKFLOWS / "windows-hardware-pilot.yml").read_text(encoding="utf-8")

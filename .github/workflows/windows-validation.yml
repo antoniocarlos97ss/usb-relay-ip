@@ -53,6 +53,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-client.txt -r requirements-host.txt
 
+      - name: Prepare isolated ProgramData for unit tests
+        shell: powershell
+        run: |
+          $testProgramData = Join-Path $env:RUNNER_TEMP ("usb-relay-unit-" + [guid]::NewGuid().ToString('N'))
+          $operationLocks = Join-Path $testProgramData "USBRelay\operation-locks"
+          New-Item -ItemType Directory -Path $operationLocks -Force | Out-Null
+          "PROGRAMDATA=$testProgramData" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ALLUSERSPROFILE=$testProgramData" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Run complete unit test suite
         shell: powershell
         run: python -m unittest discover -s tests -v

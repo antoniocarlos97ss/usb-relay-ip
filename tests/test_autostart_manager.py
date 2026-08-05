@@ -24,8 +24,31 @@ if "winreg" not in sys.modules:
 
 class TestAutostartManagerHost(unittest.TestCase):
 
+    def test_program_files_registry_key_uses_the_real_machine_path(self):
+        from host.core import autostart_manager
+
+        with patch.object(autostart_manager.winreg, "HKEY_LOCAL_MACHINE", object(), create=True), \
+             patch.object(autostart_manager.winreg, "OpenKey", return_value=Mock()) as open_key, \
+             patch.object(
+                 autostart_manager.winreg,
+                 "QueryValueEx",
+                 side_effect=[(r"C:\Program Files", 1), FileNotFoundError(), FileNotFoundError()],
+             ), \
+             patch.object(autostart_manager.winreg, "CloseKey"):
+            roots = autostart_manager._registry_program_files_roots()
+
+        self.assertIn(r"c:\program files", roots)
+        self.assertEqual(
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion",
+            open_key.call_args.args[1],
+        )
+
     @patch("host.core.autostart_manager.subprocess.run")
-    def test_register_boot_task_success(self, mock_run):
+    @patch(
+        "host.core.autostart_manager._program_files_roots",
+        return_value=(r"c:\program files",),
+    )
+    def test_register_boot_task_success(self, _roots, mock_run):
         mock_run.return_value = Mock(returncode=0, stdout="created", stderr="")
 
         from host.core.autostart_manager import register_boot_task
@@ -35,7 +58,11 @@ class TestAutostartManagerHost(unittest.TestCase):
         self.assertGreaterEqual(mock_run.call_count, 1)
 
     @patch("host.core.autostart_manager.subprocess.run")
-    def test_register_boot_task_failure(self, mock_run):
+    @patch(
+        "host.core.autostart_manager._program_files_roots",
+        return_value=(r"c:\program files",),
+    )
+    def test_register_boot_task_failure(self, _roots, mock_run):
         mock_run.return_value = Mock(returncode=1, stdout="", stderr="access denied")
 
         from host.core.autostart_manager import register_boot_task
@@ -102,6 +129,25 @@ class TestAutostartManagerHost(unittest.TestCase):
 
 class TestAutostartManagerClient(unittest.TestCase):
 
+    def test_program_files_registry_key_uses_the_real_machine_path(self):
+        from client.core import autostart_manager
+
+        with patch.object(autostart_manager.winreg, "HKEY_LOCAL_MACHINE", object(), create=True), \
+             patch.object(autostart_manager.winreg, "OpenKey", return_value=Mock()) as open_key, \
+             patch.object(
+                 autostart_manager.winreg,
+                 "QueryValueEx",
+                 side_effect=[(r"C:\Program Files", 1), FileNotFoundError(), FileNotFoundError()],
+             ), \
+             patch.object(autostart_manager.winreg, "CloseKey"):
+            roots = autostart_manager._registry_program_files_roots()
+
+        self.assertIn(r"c:\program files", roots)
+        self.assertEqual(
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion",
+            open_key.call_args.args[1],
+        )
+
     @patch("client.core.autostart_manager._run_schtasks")
     def test_register_boot_task_rejects_user_writable_path_before_schtasks(self, mock_schtasks):
         mock_schtasks.return_value = (True, "created", "")
@@ -134,7 +180,7 @@ class TestAutostartManagerClient(unittest.TestCase):
         with patch.object(
             autostart_manager,
             "_registry_program_files_roots",
-            return_value=(r"C:\Program Files",),
+            return_value=(r"c:\program files",),
         ), patch.dict(
             os.environ,
             {"ProgramW6432": r"C:\Users\Alice\Program Files"},
@@ -223,7 +269,13 @@ class TestAutostartManagerClient(unittest.TestCase):
     @patch("client.core.autostart_manager.winreg.SetValueEx")
     @patch("client.core.autostart_manager.winreg.OpenKey")
     @patch("client.core.autostart_manager.subprocess.run")
-    def test_register_startup_success(self, mock_run, mock_open, mock_set, mock_close):
+    @patch(
+        "client.core.autostart_manager._program_files_roots",
+        return_value=(r"c:\program files",),
+    )
+    def test_register_startup_success(
+        self, _roots, mock_run, mock_open, mock_set, mock_close
+    ):
         mock_run.return_value = Mock(returncode=0, stdout="ok", stderr="")
         mock_open.return_value = Mock()
 
@@ -238,7 +290,13 @@ class TestAutostartManagerClient(unittest.TestCase):
     @patch("client.core.autostart_manager.winreg.SetValueEx")
     @patch("client.core.autostart_manager.winreg.OpenKey")
     @patch("client.core.autostart_manager.subprocess.run")
-    def test_register_startup_failure(self, mock_run, mock_open, mock_set, mock_close):
+    @patch(
+        "client.core.autostart_manager._program_files_roots",
+        return_value=(r"c:\program files",),
+    )
+    def test_register_startup_failure(
+        self, _roots, mock_run, mock_open, mock_set, mock_close
+    ):
         mock_run.return_value = Mock(returncode=1, stdout="", stderr="access denied")
         mock_open.return_value = Mock()
 
