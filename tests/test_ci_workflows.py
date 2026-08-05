@@ -27,6 +27,8 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("python -m unittest discover -s tests -v", source)
         self.assertIn("python -m compileall -q client host shared tests ci", source)
         self.assertIn("ci\\windows_integration.ps1", source)
+        self.assertIn("actions/checkout@v7", source)
+        self.assertIn("actions/setup-python@v7", source)
         self.assertIn("permissions:\n  contents: read", source)
         self.assertNotIn("continue-on-error: true", source)
 
@@ -59,6 +61,9 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("USBIP-PILOT", source)
         self.assertIn("secrets.USB_RELAY_PILOT_API_KEY", source)
         self.assertIn("ci/windows_hardware_pilot.py", source)
+        self.assertIn("actions/checkout@v7", source)
+        self.assertIn("actions/setup-python@v7", source)
+        self.assertIn("actions/upload-artifact@v7", source)
         self.assertNotIn("--host '${{ inputs.host_ip }}'", source)
         self.assertIn("--host $env:PILOT_HOST", source)
 
@@ -70,6 +75,9 @@ class WindowsCiWorkflowTests(unittest.TestCase):
         self.assertIn("runs-on: windows-2022", source)
         self.assertNotIn("windows-latest", source)
         self.assertIn("if-no-files-found: error", source)
+        self.assertIn("actions/checkout@v7", source)
+        self.assertIn("actions/setup-python@v7", source)
+        self.assertIn("actions/upload-artifact@v7", source)
         self.assertIn("permissions:\n  contents: read", source)
 
 

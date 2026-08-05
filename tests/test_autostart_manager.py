@@ -100,21 +100,33 @@ class TestAutostartManagerClient(unittest.TestCase):
         self.assertIn("--headless", xml)
         self.assertNotIn("python.exe</Command>\n      <Arguments>--headless", xml)
 
+    @patch("client.core.autostart_manager.winreg.CloseKey")
+    @patch("client.core.autostart_manager.winreg.SetValueEx")
+    @patch("client.core.autostart_manager.winreg.OpenKey")
     @patch("client.core.autostart_manager.subprocess.run")
-    def test_register_startup_success(self, mock_run):
+    def test_register_startup_success(self, mock_run, mock_open, mock_set, mock_close):
         mock_run.return_value = Mock(returncode=0, stdout="ok", stderr="")
+        mock_open.return_value = Mock()
 
         from client.core.autostart_manager import register_startup
         result = register_startup("C:\\USBRelay\\USBRelayClient.exe")
         self.assertEqual(result, (True, True))
+        mock_set.assert_called_once()
+        mock_close.assert_called_once()
 
+    @patch("client.core.autostart_manager.winreg.CloseKey")
+    @patch("client.core.autostart_manager.winreg.SetValueEx")
+    @patch("client.core.autostart_manager.winreg.OpenKey")
     @patch("client.core.autostart_manager.subprocess.run")
-    def test_register_startup_failure(self, mock_run):
+    def test_register_startup_failure(self, mock_run, mock_open, mock_set, mock_close):
         mock_run.return_value = Mock(returncode=1, stdout="", stderr="access denied")
+        mock_open.return_value = Mock()
 
         from client.core.autostart_manager import register_startup
         result = register_startup("C:\\USBRelay\\USBRelayClient.exe")
         self.assertEqual(result, (True, False))
+        mock_set.assert_called_once()
+        mock_close.assert_called_once()
 
     @patch("client.core.autostart_manager.winreg.CloseKey")
     @patch("client.core.autostart_manager.winreg.QueryValueEx")

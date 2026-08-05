@@ -25,19 +25,22 @@ class TestUsbipdWrapper(unittest.TestCase):
             self.assertEqual(version, (0, 0))
 
     def test_is_available_true(self):
-        with patch("host.core.usbipd_wrapper._run_command") as mock_run:
+        with patch("host.core.usbipd_wrapper._find_usbipd", return_value=r"C:\usbipd.exe"), \
+             patch("host.core.usbipd_wrapper._run_command") as mock_run:
             mock_run.return_value = (0, "usbipd version 4.2.0", "")
             from host.core.usbipd_wrapper import is_available
             self.assertTrue(is_available())
 
     def test_is_available_false_if_version_too_low(self):
-        with patch("host.core.usbipd_wrapper._run_command") as mock_run:
+        with patch("host.core.usbipd_wrapper._find_usbipd", return_value=r"C:\usbipd.exe"), \
+             patch("host.core.usbipd_wrapper._run_command") as mock_run:
             mock_run.return_value = (0, "usbipd version 3.0.0", "")
             from host.core.usbipd_wrapper import is_available
             self.assertFalse(is_available())
 
     def test_is_available_false_if_not_found(self):
-        with patch("host.core.usbipd_wrapper._run_command") as mock_run:
+        with patch("host.core.usbipd_wrapper._find_usbipd", return_value=None), \
+             patch("host.core.usbipd_wrapper._run_command") as mock_run:
             mock_run.return_value = (-1, "", "not found")
             from host.core.usbipd_wrapper import is_available
             self.assertFalse(is_available())
