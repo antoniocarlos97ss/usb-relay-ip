@@ -82,6 +82,20 @@ class TestUsbipWrapper(unittest.TestCase):
         self.assertTrue(result.success)
         remove.assert_called_once_with("1-11")
 
+    def test_attach_refuses_when_pnp_correlation_cannot_be_invalidated(self):
+        with patch("client.core.usbip_wrapper._run_command") as run, \
+             patch("client.core.usbip_wrapper.sys.platform", "win32"), \
+             patch("client.core.windows_pnp.remove_session_correlation", return_value=False), \
+             patch("client.core.windows_pnp.snapshot_usb_devices") as snapshot:
+            snapshot.return_value = object()
+            run.return_value = (0, "attached", "")
+            from client.core.usbip_wrapper import attach_device
+
+            result = attach_device("192.168.1.10", "1-11", vid="1234", pid="abcd")
+
+        self.assertFalse(result.success)
+        run.assert_not_called()
+
     @patch("client.core.usbip_wrapper.operation_coordinator.release_named", create=True)
     @patch("client.core.usbip_wrapper.operation_coordinator.acquire_named", return_value=True, create=True)
     @patch("client.core.usbip_wrapper._attach_device_locked")

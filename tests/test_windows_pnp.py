@@ -355,8 +355,55 @@ class WindowsPnpTests(unittest.TestCase):
 
         correlation = windows_pnp.get_session_correlation("1-2")
         self.assertIsNotNone(correlation)
-        self.assertEqual((), correlation.instance_ids)
-        self.assertEqual("port-only", correlation.basis)
+        self.assertEqual((r"USB\VID_1234&PID_ABCD\OLD",), correlation.instance_ids)
+        self.assertEqual(7, correlation.local_port)
+
+    def test_port_only_record_allows_single_session_conservative_fallback(self):
+        import client.core.windows_pnp as windows_pnp
+
+        windows_pnp.record_session_port("1-2", "1234", "abcd", 7)
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": r"USB\VID_0000&PID_0002\FAILURE",
+            "ConfigManagerErrorCode": 43,
+        }]))
+        attached = [AttachedDevice(port=7, busid="1-2", vid="1234", pid="abcd")]
+
+        self.assertEqual(
+            statuses,
+            find_session_code43("1-2", "1234", "abcd", statuses, attached),
+        )
+
+    def test_session_storage_error_is_unknown_and_fails_closed(self):
+        import client.core.windows_pnp as windows_pnp
+
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": r"USB\VID_0000&PID_0002\FAILURE",
+            "ConfigManagerErrorCode": 43,
+        }]))
+        attached = [AttachedDevice(port=7, busid="1-2", vid="1234", pid="abcd")]
+        with unittest.mock.patch.object(
+            windows_pnp, "_session_storage_lock", side_effect=PermissionError("denied")
+        ):
+            self.assertIsNone(windows_pnp.get_session_correlation("1-2"))
+            self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, attached))
+            self.assertFalse(windows_pnp.record_session_port("1-2", "1234", "abcd", 7))
+
+    def test_clear_session_correlations_persists_empty_store(self):
+        import client.core.windows_pnp as windows_pnp
+
+        windows_pnp.record_session_port("1-2", "1234", "abcd", 7)
+        self.assertTrue(windows_pnp.clear_session_correlations())
+
+        with open(os.path.join(self._tempdir.name, "sessions.json"), "r", encoding="utf-8") as stream:
+            self.assertEqual([], json.load(stream))
+
+    def test_atomic_session_write_flushes_and_fsyncs(self):
+        import client.core.windows_pnp as windows_pnp
+
+        with unittest.mock.patch.object(windows_pnp.os, "fsync") as fsync:
+            windows_pnp.record_session_port("1-2", "1234", "abcd", 7)
+
+        fsync.assert_called_once()
 
     def test_multiple_descriptor_failures_are_not_attributed(self):
         self._register_session("1-2", "1234", "abcd", r"USB\VID_1234&PID_ABCD\TOKEN")

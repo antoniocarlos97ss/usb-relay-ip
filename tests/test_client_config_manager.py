@@ -223,3 +223,58 @@ class TestClientScheduledReconnectConfig(unittest.TestCase):
         config = config_manager.load_config()
         observed = {(item.vid, item.pid) for item in config.permanent_devices}
         self.assertEqual(set(identities), observed)
+
+    def test_missing_shared_root_falls_back_to_user_storage_without_creating_it(self):
+        user_dir = os.path.join(self._tmpdir, "fallback-user")
+        shared_dir = os.path.join(self._tmpdir, "missing-shared")
+        os.makedirs(user_dir, exist_ok=True)
+
+        with patch("client.core.config_manager._config_dir", return_value=user_dir), \
+             patch("client.core.config_manager._shared_config_dir", return_value=shared_dir):
+            config = config_manager.load_config()
+
+        self.assertEqual("", config.api_key)
+        self.assertFalse(os.path.exists(shared_dir))
+        self.assertTrue(os.path.exists(os.path.join(user_dir, "client_config.json")))
+
+    def test_storage_lock_error_returns_controlled_default(self):
+        with patch.object(config_manager, "_config_storage_lock", side_effect=PermissionError("denied")):
+            config = config_manager.load_config()
+
+        self.assertEqual(config_manager.ClientConfig(), config)
+
+    def test_read_oserror_returns_controlled_default(self):
+        with patch.object(config_manager, "_read_config_file", side_effect=OSError("unreadable")):
+            config = config_manager.load_config()
+
+        self.assertEqual(config_manager.ClientConfig(), config)
+
+    def test_shared_api_key_is_preserved_when_newer_user_mirror_is_promoted(self):
+        user_dir = os.path.join(self._tmpdir, "api-key-user")
+        shared_dir = os.path.join(self._tmpdir, "api-key-shared")
+        os.makedirs(user_dir, exist_ok=True)
+        os.makedirs(shared_dir, exist_ok=True)
+        user_path = os.path.join(user_dir, "client_config.json")
+        shared_path = os.path.join(shared_dir, "client_config.json")
+        with open(shared_path, "w", encoding="utf-8") as stream:
+            json.dump({"host_ip": "10.0.0.10", "api_key": "keep-me"}, stream)
+        with open(user_path, "w", encoding="utf-8") as stream:
+            json.dump({"host_ip": "10.0.0.20"}, stream)
+        os.utime(shared_path, (1000, 1000))
+        os.utime(user_path, (2000, 2000))
+
+        with patch("client.core.config_manager._config_dir", return_value=user_dir), \
+             patch("client.core.config_manager._shared_config_dir", return_value=shared_dir):
+            config = config_manager.load_config()
+
+        self.assertEqual("10.0.0.20", config.host_ip)
+        self.assertEqual("keep-me", config.api_key)
+
+    def test_atomic_config_write_flushes_and_fsyncs(self):
+        path = os.path.join(self._tmpdir, "atomic", "client_config.json")
+        with patch("client.core.config_manager.os.fsync") as fsync:
+            config_manager._write_config_file(path, config_manager.ClientConfig().model_dump())
+
+        fsync.assert_called_once()
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual([], [name for name in os.listdir(os.path.dirname(path)) if name.endswith(".tmp")])

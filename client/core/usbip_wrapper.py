@@ -179,7 +179,11 @@ def _attach_device_locked(
     if vid and pid and sys.platform == "win32":
         try:
             from client.core import windows_pnp
-            windows_pnp.remove_session_correlation(busid)
+            if not windows_pnp.remove_session_correlation(busid):
+                return CommandResult(
+                    success=False,
+                    message=f"Failed to invalidate safe PnP correlation for {busid}.",
+                )
             before_snapshot = windows_pnp.snapshot_usb_devices(timeout=min(2, max(1, timeout)))
             if before_snapshot is None and timeout >= 3:
                 before_snapshot = windows_pnp.snapshot_usb_devices(timeout=3)

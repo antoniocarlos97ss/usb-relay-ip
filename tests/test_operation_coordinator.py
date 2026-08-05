@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from client.core import operation_coordinator
+
 
 def _try_operation_in_process(lock_path, result_queue, release_event, hold):
     from client.core import operation_coordinator
@@ -102,6 +104,36 @@ class OperationCoordinatorTests(unittest.TestCase):
             release_event.set()
             holder.join(10)
             self.assertEqual(0, holder.exitcode)
+
+    def test_missing_lock_parent_fails_closed_without_runtime_root_creation(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            lock_path = os.path.join(tempdir, "missing", "usbip.lock")
+            with mock.patch(
+                "client.core.operation_coordinator._operation_lock_path",
+                return_value=lock_path,
+            ):
+                self.assertFalse(operation_coordinator.try_acquire("1234", "abcd", "1-12"))
+
+            self.assertFalse(os.path.exists(os.path.dirname(lock_path)))
+
+    def test_lock_path_errors_fail_closed(self):
+        with mock.patch(
+            "client.core.operation_coordinator._operation_lock_path",
+            side_effect=PermissionError("denied"),
+        ):
+            self.assertFalse(operation_coordinator.try_acquire("1234", "abcd", "1-11"))
+
+    def test_reset_does_not_release_an_active_global_lock(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            lock_path = os.path.join(tempdir, "usbip.lock")
+            with mock.patch(
+                "client.core.operation_coordinator._operation_lock_path",
+                return_value=lock_path,
+            ):
+                self.assertTrue(operation_coordinator.try_acquire("1234", "abcd", "1-11"))
+                operation_coordinator.reset()
+                self.assertTrue(operation_coordinator.is_active("1234", "abcd", "1-11"))
+                operation_coordinator.release("1234", "abcd", "1-11")
 
 
 if __name__ == "__main__":

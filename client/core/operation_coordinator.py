@@ -36,8 +36,12 @@ def _operation_lock_path(key: tuple[str, ...]) -> str:
 
 
 def _try_lock_file(path: str) -> BinaryIO | None:
+    """Acquire an inter-process lock; never manufacture a shared lock root."""
+    stream: BinaryIO | None = None
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # ProgramData/operation-locks is provisioned by the installer.  A
+        # missing or inaccessible parent must make the transport operation
+        # fail closed instead of silently becoming thread-only.
         stream = open(path, "a+b")
         stream.seek(0, os.SEEK_END)
         if stream.tell() == 0:
@@ -54,11 +58,13 @@ def _try_lock_file(path: str) -> BinaryIO | None:
 
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         return stream
-    except (OSError, BlockingIOError):
-        try:
-            stream.close()
-        except (NameError, OSError):
-            pass
+    except (OSError, TimeoutError) as exc:
+        logger.warning("Unable to acquire operation lock %s: %s", path, exc)
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
         return None
 
 
@@ -86,7 +92,12 @@ def _try_acquire_key(key: tuple[str, ...]) -> bool:
     with _lock:
         if key in _active:
             return False
-        process_lock = _try_lock_file(_operation_lock_path(key))
+        try:
+            lock_path = _operation_lock_path(key)
+            process_lock = _try_lock_file(lock_path)
+        except (OSError, TimeoutError) as exc:
+            logger.warning("Unable to resolve operation lock for %s: %s", key, exc)
+            return False
         if process_lock is None:
             return False
         _process_locks[key] = process_lock
@@ -135,8 +146,10 @@ def is_active(vid: str, pid: str, busid: str = "") -> bool:
 
 
 def reset() -> None:
-    with _lock:
-        for process_lock in list(_process_locks.values()):
-            _unlock_file(process_lock)
-        _process_locks.clear()
-        _active.clear()
+    """Deprecated compatibility hook; never releases another operation.
+
+    Lock lifetime is owned by the matching release call.  A global reset can
+    release a live transport lock while another thread/process is still
+    mutating USB state, so it is intentionally a no-op.
+    """
+    logger.warning("operation_coordinator.reset() is deprecated and does not release active locks")
