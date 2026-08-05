@@ -24,6 +24,7 @@ sys.modules.setdefault("PyQt6.QtCore", qtcore)
 from client.core import operation_coordinator
 from client.core.pnp_recovery import (
     PnpRecoveryMonitor,
+    VALIDATE_SECONDS,
     _matching_attached,
     _wait_host_shared,
     _wait_pnp_healthy,
@@ -307,11 +308,22 @@ class PnpRecoveryTests(unittest.TestCase):
         self.assertFalse(_wait_pnp_healthy(self.device, 0.5))
 
     @patch("client.core.pnp_recovery.time.sleep")
+    @patch(
+        "client.core.pnp_recovery.time.monotonic",
+        side_effect=_bounded_clock(0.0, 0.1, 1.0),
+    )
     @patch("client.core.pnp_recovery.usbip_wrapper.list_attached")
+    @patch("client.core.pnp_recovery.windows_pnp.get_session_correlation", return_value=None)
     @patch("client.core.pnp_recovery.windows_pnp.get_correlated_statuses", return_value=[])
     @patch("client.core.pnp_recovery.windows_pnp.list_usb_devices")
-    def test_validation_falls_back_to_exact_vid_pid_without_correlation(
-        self, list_usb_devices, correlated, list_attached, sleep
+    def test_validation_rejects_exact_vid_pid_without_fresh_correlation(
+        self,
+        list_usb_devices,
+        correlated,
+        correlation,
+        list_attached,
+        monotonic,
+        sleep,
     ):
         list_attached.return_value = [AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd")]
         list_usb_devices.return_value = [
@@ -325,7 +337,51 @@ class PnpRecoveryTests(unittest.TestCase):
             )
         ]
 
-        self.assertTrue(_wait_pnp_healthy(self.device, time.monotonic() + 5))
+        self.assertFalse(_wait_pnp_healthy(self.device, 0.5))
+
+    def test_validation_window_is_twelve_seconds(self):
+        self.assertEqual(12, VALIDATE_SECONDS)
+
+    @patch("client.core.pnp_recovery.threading.Thread")
+    @patch("client.core.pnp_recovery.windows_pnp.find_unknown_code43", return_value=[])
+    @patch("client.core.pnp_recovery.windows_pnp.find_session_code43")
+    @patch("client.core.pnp_recovery.windows_pnp.list_usb_devices")
+    @patch("client.core.pnp_recovery.usbip_wrapper.query_attached_devices")
+    def test_recovery_worker_is_non_daemon_so_compensation_can_finish(
+        self,
+        local_query,
+        list_usb_devices,
+        find_session_code43,
+        find_unknown_code43,
+        thread_factory,
+    ):
+        from client.core.usbip_wrapper import AttachedDevicesQuery
+
+        broken = PnpDeviceStatus(
+            instance_id=r"USB\VID_1234&PID_ABCD\TOKEN",
+            name="Token",
+            problem_code=43,
+            status="Error",
+            vid="1234",
+            pid="abcd",
+        )
+        local_query.return_value = AttachedDevicesQuery(
+            True,
+            (AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd"),),
+        )
+        list_usb_devices.return_value = [broken]
+        find_session_code43.return_value = [broken]
+        worker = Mock()
+        thread_factory.return_value = worker
+        monitor = PnpRecoveryMonitor(Mock(host_ip="10.0.0.1", host_port=5757, api_key=""))
+        monitor._running = True
+        monitor.update_devices([self.device])
+        monitor._fail_samples[self.device.busid] = 1
+
+        monitor._check_once()
+
+        self.assertFalse(thread_factory.call_args.kwargs["daemon"])
+        worker.start.assert_called_once_with()
 
     @patch("client.core.pnp_recovery.time.sleep")
     @patch(

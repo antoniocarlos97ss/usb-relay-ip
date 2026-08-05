@@ -446,6 +446,10 @@ class ScheduledReconnectController(QObject):
         workers = list(self._workers)
         for worker in workers:
             worker.request_cancel()
+        self.wait_for_workers(wait_ms)
+
+    def wait_for_workers(self, wait_ms: int = 3000):
+        workers = list(self._workers)
         deadline = time.monotonic() + max(0, wait_ms) / 1000
         for worker in workers:
             remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))

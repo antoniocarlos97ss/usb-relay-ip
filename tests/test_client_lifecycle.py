@@ -130,6 +130,24 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertNotIn("usbip_wrapper.kill_all_subprocesses()", source)
         self.assertIn("resolve_live_shutdown_sessions", source)
 
+    def test_shutdown_waits_for_transactional_qthreads_with_one_bounded_budget(self):
+        root = Path(__file__).parents[1]
+        window = (root / "client" / "gui" / "main_window.py").read_text(encoding="utf-8")
+        scheduler = (root / "client" / "core" / "scheduled_reconnect.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("TRANSACTION_SHUTDOWN_WAIT_MS = 12000", window)
+        self.assertIn("self._scheduled_reconnect.stop(wait_ms=0)", window)
+        self.assertGreaterEqual(
+            window.count(
+                "self._wait_for_transaction_workers(TRANSACTION_SHUTDOWN_WAIT_MS)"
+            ),
+            2,
+        )
+        self.assertIn("timeout=max(1, int(local_timeout))", window)
+        self.assertIn("def wait_for_workers(self, wait_ms", scheduler)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,6 +75,7 @@ class DetachWorker(QThread):
         port: int | None = None,
         expected_vid: str = "",
         expected_pid: str = "",
+        timeout: int | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -82,16 +83,19 @@ class DetachWorker(QThread):
         self._port = port
         self._expected_vid = expected_vid
         self._expected_pid = expected_pid
+        self._timeout = timeout
 
     def run(self):
         _mark_worker_running(self, killable=False)
         try:
-            result = usbip_wrapper.detach_busid(
-                self._busid,
-                port_hint=self._port,
-                expected_vid=self._expected_vid,
-                expected_pid=self._expected_pid,
-            )
+            kwargs = {
+                "port_hint": self._port,
+                "expected_vid": self._expected_vid,
+                "expected_pid": self._expected_pid,
+            }
+            if self._timeout is not None:
+                kwargs["timeout"] = self._timeout
+            result = usbip_wrapper.detach_busid(self._busid, **kwargs)
             self.finished.emit(result.success, result.message, self._busid)
         except Exception as exc:
             logger.error(f"DetachWorker crashed: {exc}\n{traceback.format_exc()}")

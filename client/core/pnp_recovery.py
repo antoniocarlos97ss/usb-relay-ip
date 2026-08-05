@@ -17,7 +17,7 @@ RECOVERY_DEADLINE_SECONDS = 90
 WAIT_SHARED_SECONDS = 6
 WAIT_UNBOUND_SECONDS = 6
 ROLLBACK_SHARED_SECONDS = 6
-VALIDATE_SECONDS = 15
+VALIDATE_SECONDS = 12
 SUCCESS_COOLDOWN_SECONDS = 60
 FAILURE_COOLDOWN_SECONDS = 15 * 60
 
@@ -195,26 +195,12 @@ def _wait_pnp_healthy(
         statuses = windows_pnp.list_usb_devices(timeout=min(5, remaining), include_properties=False)
         if statuses is not None:
             correlated = windows_pnp.get_correlated_statuses(device.busid, statuses)
-            correlation = windows_pnp.get_session_correlation(device.busid)
             if correlated:
                 healthy_correlated = [
                     item for item in correlated
                     if item.problem_code == 0 and (item.vid, item.pid) == key
                 ]
                 if healthy_correlated:
-                    return True
-            elif correlation is None or not correlation.instance_ids:
-                matching_local = [
-                    item for item in attached_devices
-                    if (item.vid.lower(), item.pid.lower()) == key
-                ]
-                exact = [item for item in statuses if (item.vid, item.pid) == key]
-                if (
-                    len(matching_local) == 1
-                    and matching_local[0].busid == device.busid
-                    and len(exact) == 1
-                    and exact[0].problem_code == 0
-                ):
                     return True
         time.sleep(1)
     return False
@@ -488,7 +474,11 @@ class _PnpRecoveryState:
                     target=self._recover_in_background,
                     args=(device,),
                     name=f"pnp-recovery-{device.busid}",
-                    daemon=True,
+                    # A daemon thread can be terminated by interpreter shutdown
+                    # while it is restoring Shared state after a successful
+                    # unbind. Keep the process alive until bounded compensation
+                    # and the operation-lock release have completed.
+                    daemon=False,
                 )
                 self._recovery_threads[device.busid] = worker
             worker.start()

@@ -26,6 +26,7 @@ from client.gui.tray import ClientTrayIcon
 from shared.i18n import t
 
 logger = logging.getLogger(__name__)
+TRANSACTION_SHUTDOWN_WAIT_MS = 12000
 
 
 class ClientSettingsTab(QWidget):
@@ -624,6 +625,7 @@ class ClientMainWindow(QMainWindow):
                 port=session.port,
                 expected_vid=session.vid,
                 expected_pid=session.pid,
+                timeout=max(1, int(local_timeout)),
             )
             worker.finished.connect(
                 lambda success, msg, b=session.busid: logger.info(
@@ -659,6 +661,22 @@ class ClientMainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+    def _wait_for_transaction_workers(self, timeout_ms: int):
+        """Cancel and wait for detach/rebind work within one shared deadline."""
+        deadline = time.monotonic() + max(0, timeout_ms) / 1000
+
+        # Attach is safe to abort. Detach and reconnect/rebind are not.
+        killable_owner_ids = usbip_worker.active_killable_thread_ids()
+        if killable_owner_ids:
+            usbip_wrapper.kill_all_subprocesses(killable_owner_ids)
+
+        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+        self._wait_for_workers(remaining_ms)
+
+        if hasattr(self, "_scheduled_reconnect") and self._scheduled_reconnect:
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            self._scheduled_reconnect.wait_for_workers(remaining_ms)
+
     def force_cleanup(self):
         logger.info("Force cleanup: cancelling workers and killing attach subprocesses only")
         for worker in list(self._workers):
@@ -668,11 +686,13 @@ class ClientMainWindow(QMainWindow):
         killable_owner_ids = usbip_worker.active_killable_thread_ids()
         if killable_owner_ids:
             usbip_wrapper.kill_all_subprocesses(killable_owner_ids)
-        self._wait_for_workers(1500)
+        self._wait_for_transaction_workers(1500)
 
     def quit_app(self):
         if hasattr(self, "_scheduled_reconnect") and self._scheduled_reconnect:
-            self._scheduled_reconnect.stop()
+            # Cancel now; the quit paths wait for all transaction workers with
+            # one shared deadline after starting the shutdown detach workers.
+            self._scheduled_reconnect.stop(wait_ms=0)
         if hasattr(self, "_poller") and self._poller:
             self._poller.devices_fetched.disconnect()
             self._poller.connection_changed.disconnect()
@@ -690,7 +710,7 @@ class ClientMainWindow(QMainWindow):
         logger.info("Quitting app with bounded, coordinated detach")
         self.quit_app()
         self.detach_all_async(local_timeout=2.0, host_timeout=1.0)
-        self._wait_for_workers(3500)
+        self._wait_for_transaction_workers(TRANSACTION_SHUTDOWN_WAIT_MS)
 
     def commit_data_request(self):
         """Fast Windows shutdown path with a strictly bounded detach budget."""
@@ -700,4 +720,4 @@ class ClientMainWindow(QMainWindow):
         logger.info("Windows commitDataRequest: fast coordinated shutdown")
         self.quit_app()
         self.detach_all_async(local_timeout=0.35, host_timeout=0.35)
-        self._wait_for_workers(650)
+        self._wait_for_transaction_workers(TRANSACTION_SHUTDOWN_WAIT_MS)

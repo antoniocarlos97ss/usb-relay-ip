@@ -89,6 +89,27 @@ class DetachWorkerTests(unittest.TestCase):
             expected_pid="abcd",
         )
 
+    def test_shutdown_detach_forwards_a_bounded_command_timeout(self):
+        worker = DetachWorker(
+            "1-11",
+            port=7,
+            expected_vid="1234",
+            expected_pid="abcd",
+            timeout=2,
+        )
+
+        with patch("client.core.usbip_worker.usbip_wrapper.detach_busid") as detach:
+            detach.return_value = types.SimpleNamespace(success=True, message="detached")
+            worker.run()
+
+        detach.assert_called_once_with(
+            "1-11",
+            port_hint=7,
+            expected_vid="1234",
+            expected_pid="abcd",
+            timeout=2,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
