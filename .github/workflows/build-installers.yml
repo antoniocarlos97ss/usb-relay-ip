@@ -4,11 +4,24 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - feature/session-resilience
+      - master
+      - "fix/**"
+      - "feature/**"
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-installers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
+    timeout-minutes: 45
 
     defaults:
       run:
@@ -22,6 +35,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-client.txt
+            requirements-host.txt
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -36,5 +53,7 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: usb-relay-installers
+          name: usb-relay-installers-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

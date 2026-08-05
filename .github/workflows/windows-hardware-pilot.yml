@@ -1,0 +1,122 @@
+name: Windows Hardware Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type USBIP-PILOT to authorize a destructive detach/unbind/bind/attach cycle"
+        required: true
+        type: string
+      host_ip:
+        description: "USB Relay Host IP reachable from the self-hosted runner"
+        required: true
+        type: string
+      host_port:
+        description: "USB Relay Host API port"
+        required: true
+        default: "5757"
+        type: string
+      busid:
+        description: "Exact physical host busid (for example 1-11)"
+        required: true
+        type: string
+      expected_vid:
+        description: "Expected four-digit VID; VID_0000 is rejected"
+        required: true
+        type: string
+      expected_pid:
+        description: "Expected four-digit PID; PID_0000 is rejected"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usbip-windows-hardware-pilot
+  cancel-in-progress: false
+
+jobs:
+  verified-reconnect-cycle:
+    name: Verified physical USB/IP recovery cycle
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - usbip-pilot
+    environment: usbip-pilot
+    timeout-minutes: 30
+
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+      USB_RELAY_PILOT_API_KEY: ${{ secrets.USB_RELAY_PILOT_API_KEY }}
+
+    steps:
+      - name: Require explicit destructive-test confirmation
+        shell: powershell
+        env:
+          PILOT_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if ($env:PILOT_CONFIRMATION -ne 'USBIP-PILOT') {
+            throw 'Confirmation must be exactly USBIP-PILOT.'
+          }
+
+      - name: Checkout reviewed revision
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-client.txt
+            requirements-host.txt
+
+      - name: Install client dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-client.txt
+
+      - name: Verify runner and usbip prerequisites
+        shell: powershell
+        run: |
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+          if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'The usbip-pilot runner must execute with local Administrator privileges.'
+          }
+          $usbip = Get-Command usbip.exe -ErrorAction SilentlyContinue
+          if ($null -eq $usbip) {
+            throw 'usbip.exe is not available on PATH.'
+          }
+          Write-Host "Runner identity: $($identity.Name) [$($identity.User.Value)]"
+          Write-Host "usbip.exe: $($usbip.Source)"
+
+      - name: Execute one identity-checked recovery cycle
+        shell: powershell
+        env:
+          PILOT_HOST: ${{ inputs.host_ip }}
+          PILOT_PORT: ${{ inputs.host_port }}
+          PILOT_BUSID: ${{ inputs.busid }}
+          PILOT_VID: ${{ inputs.expected_vid }}
+          PILOT_PID: ${{ inputs.expected_pid }}
+        run: |
+          python ci/windows_hardware_pilot.py `
+            --host $env:PILOT_HOST `
+            --port $env:PILOT_PORT `
+            --busid $env:PILOT_BUSID `
+            --vid $env:PILOT_VID `
+            --pid $env:PILOT_PID `
+            --output "$env:RUNNER_TEMP\usbip-pilot-report.json"
+
+      - name: Upload hardware pilot report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usbip-hardware-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\usbip-pilot-report.json
+          if-no-files-found: warn
+          retention-days: 14

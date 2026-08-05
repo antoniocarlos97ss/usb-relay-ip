@@ -1,0 +1,94 @@
+name: Windows Validation
+
+on:
+  push:
+    branches:
+      - master
+      - "fix/**"
+      - "feature/**"
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-2025
+
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-client.txt
+            requirements-host.txt
+
+      - name: Install test dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-client.txt -r requirements-host.txt
+
+      - name: Run complete unit test suite
+        shell: powershell
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile every Python module
+        shell: powershell
+        run: python -m compileall -q client host shared tests ci
+
+  windows-system-integration:
+    name: NTFS ACL, SYSTEM task, locks and PnP
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    env:
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-client.txt
+            requirements-host.txt
+
+      - name: Install integration dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-client.txt -r requirements-host.txt
+
+      - name: Exercise Windows integration as runner user and SYSTEM
+        shell: powershell
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\ci\windows_integration.ps1
