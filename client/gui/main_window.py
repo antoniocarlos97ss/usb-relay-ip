@@ -601,6 +601,10 @@ class ClientMainWindow(QMainWindow):
         host_timeout: float = 1.0,
     ):
         """Start identity-checked detach workers for all live local sessions."""
+        # Set the barrier before any local/host enumeration so an AttachWorker
+        # cannot start while shutdown is resolving sessions, even when the
+        # resolver returns no sessions or fails closed.
+        usbip_worker.set_shutting_down()
         sessions = self._resolve_live_shutdown_sessions(
             local_timeout=local_timeout,
             host_timeout=host_timeout,
@@ -609,7 +613,6 @@ class ClientMainWindow(QMainWindow):
             self._port_map.clear()
             return
         logger.info("Async detaching %s verified live session(s)", len(sessions))
-        usbip_worker.set_shutting_down()
         self._port_map.clear()
         for session in sessions:
             if not operation_coordinator.try_acquire(
@@ -719,5 +722,5 @@ class ClientMainWindow(QMainWindow):
         self._shutting_down = True
         logger.info("Windows commitDataRequest: fast coordinated shutdown")
         self.quit_app()
-        self.detach_all_async(local_timeout=0.35, host_timeout=0.35)
+        self.detach_all_async(local_timeout=3.0, host_timeout=0.35)
         self._wait_for_transaction_workers(TRANSACTION_SHUTDOWN_WAIT_MS)

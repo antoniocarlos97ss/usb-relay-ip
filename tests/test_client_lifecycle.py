@@ -1,10 +1,90 @@
+import sys
+import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from shared.models import AttachedDevice, UsbDevice
 
 
+class _FakeWidget:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+class _FakeQThread:
+    def __init__(self, parent=None):
+        self.parent = parent
+
+    def wait(self, *_args, **_kwargs):
+        return True
+
+
+class _FakeSignalDescriptor:
+    def __set_name__(self, owner, name):
+        self._name = f"_{name}_signal"
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        signal = instance.__dict__.get(self._name)
+        if signal is None:
+            signal = SimpleNamespace(connect=lambda *_args, **_kwargs: None)
+            instance.__dict__[self._name] = signal
+        return signal
+
+
+def _ensure_client_main_window_importable():
+    """Load ClientMainWindow behind Qt/module fakes without creating a GUI."""
+    pyqt6 = sys.modules.setdefault("PyQt6", types.ModuleType("PyQt6"))
+    qtcore = sys.modules.setdefault("PyQt6.QtCore", types.ModuleType("PyQt6.QtCore"))
+    qtgui = sys.modules.setdefault("PyQt6.QtGui", types.ModuleType("PyQt6.QtGui"))
+    qtwidgets = sys.modules.setdefault("PyQt6.QtWidgets", types.ModuleType("PyQt6.QtWidgets"))
+    pyqt6.QtCore = qtcore
+    pyqt6.QtGui = qtgui
+    pyqt6.QtWidgets = qtwidgets
+
+    qtcore.QThread = _FakeQThread
+    qtcore.QObject = _FakeWidget
+    qtcore.QTimer = _FakeWidget
+    qtcore.QCloseEvent = _FakeWidget
+    qtcore.pyqtSignal = lambda *_args, **_kwargs: _FakeSignalDescriptor()
+    qtgui.QCloseEvent = _FakeWidget
+
+    for name in (
+        "QHBoxLayout",
+        "QInputDialog",
+        "QLabel",
+        "QMainWindow",
+        "QPushButton",
+        "QStatusBar",
+        "QTabWidget",
+        "QVBoxLayout",
+        "QWidget",
+    ):
+        setattr(qtwidgets, name, _FakeWidget)
+
+    gui_fakes = {
+        "client.gui.device_table": {"ClientDeviceTable": _FakeWidget},
+        "client.gui.log_viewer": {"LogViewer": _FakeWidget},
+        "client.gui.settings_dialog": {"ClientSettingsDialog": _FakeWidget},
+        "client.gui.tray": {"ClientTrayIcon": _FakeWidget},
+    }
+    for module_name, attributes in gui_fakes.items():
+        module = sys.modules.setdefault(module_name, types.ModuleType(module_name))
+        for name, value in attributes.items():
+            setattr(module, name, value)
+
+    from client.gui.main_window import ClientMainWindow
+
+    return ClientMainWindow
+
+
 class ClientLifecycleTests(unittest.TestCase):
+    def _new_window(self):
+        return object.__new__(_ensure_client_main_window_importable())
+
     def test_shutdown_resolver_enumerates_live_session_beyond_port_cache(self):
         from client.core.lifecycle import resolve_live_shutdown_sessions
 
@@ -129,30 +209,75 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertNotIn("time.monotonic() + 15", source)
         self.assertGreaterEqual(source.count("time.monotonic() + VALIDATE_SECONDS"), 2)
 
-    def test_force_cleanup_does_not_globally_kill_detach_subprocesses(self):
-        source = (Path(__file__).parents[1] / "client" / "gui" / "main_window.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("usbip_wrapper.kill_all_subprocesses()", source)
-        self.assertIn("resolve_live_shutdown_sessions", source)
+    def test_detach_sets_shutdown_barrier_before_empty_resolution(self):
+        from client.core import usbip_worker
 
-    def test_shutdown_waits_for_transactional_qthreads_with_one_bounded_budget(self):
-        root = Path(__file__).parents[1]
-        window = (root / "client" / "gui" / "main_window.py").read_text(encoding="utf-8")
-        scheduler = (root / "client" / "core" / "scheduled_reconnect.py").read_text(
-            encoding="utf-8"
+        window = self._new_window()
+        window._port_map = {"stale": 3}
+        observed = []
+
+        def resolve(**_kwargs):
+            observed.append(usbip_worker._shutting_down)
+            return []
+
+        window._resolve_live_shutdown_sessions = resolve
+        with patch.object(usbip_worker, "_shutting_down", False):
+            window.detach_all_async()
+
+        self.assertEqual([True], observed)
+        self.assertEqual({}, window._port_map)
+
+    def test_commit_data_request_uses_safe_local_timeout_and_short_host_timeout(self):
+        window = self._new_window()
+        window._shutting_down = False
+        calls = []
+        window.quit_app = lambda: calls.append(("quit",))
+        window.detach_all_async = lambda **kwargs: calls.append(("detach", kwargs))
+        window._wait_for_transaction_workers = lambda timeout_ms: calls.append(("wait", timeout_ms))
+
+        window.commit_data_request()
+
+        self.assertEqual(
+            [
+                ("quit",),
+                ("detach", {"local_timeout": 3.0, "host_timeout": 0.35}),
+                ("wait", 15000),
+            ],
+            calls,
         )
 
-        self.assertIn("TRANSACTION_SHUTDOWN_WAIT_MS = 15000", window)
-        self.assertIn("self._scheduled_reconnect.stop(wait_ms=0)", window)
-        self.assertGreaterEqual(
-            window.count(
-                "self._wait_for_transaction_workers(TRANSACTION_SHUTDOWN_WAIT_MS)"
-            ),
-            2,
+    def test_transaction_wait_uses_one_deadline_reduced_between_worker_pools(self):
+        window = self._new_window()
+        waits = []
+        window._workers = []
+        window._wait_for_workers = lambda timeout_ms: waits.append(("client", timeout_ms))
+        window._scheduled_reconnect = SimpleNamespace(
+            wait_for_workers=lambda timeout_ms: waits.append(("reconnect", timeout_ms)),
         )
-        self.assertIn("timeout=max(1, int(local_timeout))", window)
-        self.assertIn("def wait_for_workers(self, wait_ms", scheduler)
+
+        with patch("client.gui.main_window.time.monotonic", side_effect=[100.0, 103.0, 108.0]), \
+             patch("client.gui.main_window.usbip_worker.active_killable_thread_ids", return_value=set()):
+            window._wait_for_transaction_workers(15000)
+
+        self.assertEqual([("client", 12000), ("reconnect", 7000)], waits)
+        self.assertLess(waits[1][1], waits[0][1])
+
+    def test_transaction_wait_kills_only_active_killable_ids(self):
+        window = self._new_window()
+        window._workers = []
+        window._wait_for_workers = lambda _timeout_ms: None
+        window._scheduled_reconnect = None
+
+        with patch(
+            "client.gui.main_window.usbip_worker.active_killable_thread_ids",
+            return_value={101, 202},
+        ) as active_ids, patch(
+            "client.gui.main_window.usbip_wrapper.kill_all_subprocesses",
+        ) as kill_subprocesses:
+            window._wait_for_transaction_workers(15000)
+
+        active_ids.assert_called_once_with()
+        kill_subprocesses.assert_called_once_with({101, 202})
 
 
 if __name__ == "__main__":

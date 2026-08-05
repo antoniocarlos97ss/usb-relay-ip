@@ -359,9 +359,7 @@ def run_headless(
 ):
     logger = logging.getLogger(__name__)
     from client.api.host_client import HostApiClient
-    from client.core import config_manager, operation_coordinator, usbip_wrapper
-    from client.core.pnp_recovery import _wait_pnp_healthy
-    from client.core.scheduled_reconnect import _run_reconnect_cycle
+    from client.core import config_manager
 
     try:
         config = config_manager.load_config()
