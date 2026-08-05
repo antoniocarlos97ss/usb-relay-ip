@@ -26,7 +26,7 @@ from client.gui.tray import ClientTrayIcon
 from shared.i18n import t
 
 logger = logging.getLogger(__name__)
-TRANSACTION_SHUTDOWN_WAIT_MS = 12000
+TRANSACTION_SHUTDOWN_WAIT_MS = 15000
 
 
 class ClientSettingsTab(QWidget):

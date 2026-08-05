@@ -229,7 +229,7 @@ def _run_headless_attach_cycle(api_client, config, shutdown, logger):
     helper so the outer headless loop can log them and continue.
     """
     from client.core import operation_coordinator, usbip_wrapper
-    from client.core.pnp_recovery import _wait_pnp_healthy
+    from client.core.pnp_recovery import VALIDATE_SECONDS, _wait_pnp_healthy
     from client.core.scheduled_reconnect import _run_reconnect_cycle
 
     if not config.host_ip or not config.permanent_devices:
@@ -270,7 +270,10 @@ def _run_headless_attach_cycle(api_client, config, shutdown, logger):
             healthy = (
                 local_query.success
                 and len(local_matches) == 1
-                and _wait_pnp_healthy(matched, time.monotonic() + 15)
+                and _wait_pnp_healthy(
+                    matched,
+                    time.monotonic() + VALIDATE_SECONDS,
+                )
             )
             if healthy:
                 continue
@@ -313,7 +316,7 @@ def _run_headless_attach_cycle(api_client, config, shutdown, logger):
                 )
                 healthy = result.success and _wait_pnp_healthy(
                     matched,
-                    time.monotonic() + 15,
+                    time.monotonic() + VALIDATE_SECONDS,
                 )
             except Exception:
                 logger.exception("Initial attach crashed for %s", matched.busid)

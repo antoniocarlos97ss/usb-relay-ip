@@ -1,6 +1,7 @@
 import os
 import sys
 import threading
+import time
 import types
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -219,6 +220,17 @@ class TestScheduledReconnectController(unittest.TestCase):
 
         self.assertNotIn(key, controller._failed_until)
 
+    def test_wait_for_workers_tolerates_qthread_deleted_during_cleanup(self):
+        now = [datetime(2026, 7, 7, 10, 0, tzinfo=timezone.utc)]
+        controller = self._make_controller(now, [])
+        deleted_worker = Mock()
+        deleted_worker.wait.side_effect = RuntimeError("wrapped C/C++ object has been deleted")
+        controller._workers = [deleted_worker]
+
+        controller.wait_for_workers(10)
+
+        deleted_worker.wait.assert_called_once()
+
 
 class TestScheduledReconnectCycle(unittest.TestCase):
     def test_host_state_wait_rejects_duplicate_busid(self):
@@ -276,7 +288,9 @@ class TestScheduledReconnectCycle(unittest.TestCase):
         api_client.unbind_device.return_value = True
         api_client.bind_device.return_value = True
 
+        validation_started = time.monotonic()
         success, message = _run_reconnect_cycle(api_client, _make_device(state="Attached"))
+        validation_finished = time.monotonic()
 
         self.assertTrue(success)
         self.assertEqual(message, "1-5")
@@ -295,6 +309,9 @@ class TestScheduledReconnectCycle(unittest.TestCase):
         )
         mock_cfg.mark_scheduled_reconnect_completed.assert_called_once()
         wait_pnp.assert_called_once()
+        validation_deadline = wait_pnp.call_args.args[1]
+        self.assertGreaterEqual(validation_deadline, validation_started + 11.9)
+        self.assertLessEqual(validation_deadline, validation_finished + 12.1)
 
     @patch("client.core.scheduled_reconnect._wait_pnp_healthy", return_value=True)
     @patch("client.core.scheduled_reconnect._wait_host_state", return_value=True)

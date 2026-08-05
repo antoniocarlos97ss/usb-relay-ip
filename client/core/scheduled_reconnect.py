@@ -7,7 +7,11 @@ from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
 from client.api.host_client import HostApiClient
 from client.core import config_manager, operation_coordinator, usbip_wrapper
-from client.core.pnp_recovery import _compensate_host_rebind, _wait_pnp_healthy
+from client.core.pnp_recovery import (
+    VALIDATE_SECONDS,
+    _compensate_host_rebind,
+    _wait_pnp_healthy,
+)
 from shared.models import UsbDevice
 
 logger = logging.getLogger(__name__)
@@ -333,7 +337,7 @@ def _run_reconnect_cycle_unlocked(
     if not attach_result.success:
         return False, attach_result.message
 
-    validation_deadline = time.monotonic() + 15
+    validation_deadline = time.monotonic() + VALIDATE_SECONDS
     if not _wait_pnp_healthy(matched, validation_deadline, cancel_event):
         if cancel_event and cancel_event.is_set():
             return False, "reconnect interrupted during shutdown"
@@ -455,7 +459,11 @@ class ScheduledReconnectController(QObject):
             remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
             if remaining_ms <= 0:
                 break
-            worker.wait(remaining_ms)
+            try:
+                worker.wait(remaining_ms)
+            except RuntimeError:
+                # QObject may already have been deleted by a queued completion.
+                continue
 
     def update_devices(self, devices: list[UsbDevice]):
         self._devices = list(devices)

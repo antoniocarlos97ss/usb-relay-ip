@@ -123,6 +123,12 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertIn("window.quit_app_with_detach", source)
         self.assertNotIn("app.commitDataRequest.connect(lambda _manager: _quit())", source)
 
+    def test_headless_pnp_validation_uses_shared_twelve_second_window(self):
+        source = (Path(__file__).parents[1] / "client" / "main.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("time.monotonic() + 15", source)
+        self.assertGreaterEqual(source.count("time.monotonic() + VALIDATE_SECONDS"), 2)
+
     def test_force_cleanup_does_not_globally_kill_detach_subprocesses(self):
         source = (Path(__file__).parents[1] / "client" / "gui" / "main_window.py").read_text(
             encoding="utf-8"
@@ -137,7 +143,7 @@ class ClientLifecycleTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("TRANSACTION_SHUTDOWN_WAIT_MS = 12000", window)
+        self.assertIn("TRANSACTION_SHUTDOWN_WAIT_MS = 15000", window)
         self.assertIn("self._scheduled_reconnect.stop(wait_ms=0)", window)
         self.assertGreaterEqual(
             window.count(
