@@ -470,8 +470,8 @@ def main():
     tray._quit_action.triggered.connect(_quit)
 
     # commitDataRequest fires on Windows shutdown/restart/logoff.
-    # Keep this much shorter than explicit user-initiated quit so Windows is
-    # never held up by a slow host or USB/IP command.
+    # Use the same bounded transaction budget as explicit quit so an in-flight
+    # post-unbind compensation is not abandoned during session shutdown.
     def _commit_data_request(_manager):
         logger.info("Windows shutdown/logoff requested")
         window.commit_data_request()
