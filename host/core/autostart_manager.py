@@ -1,15 +1,86 @@
 import logging
+import ntpath
 import os
 import subprocess
 import sys
 import tempfile
 import winreg
+from xml.sax.saxutils import escape
 
 logger = logging.getLogger(__name__)
 
 BOOT_TASK_NAME = "USBRelayHostBoot"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "USBRelayHost"
+
+
+def _registry_program_files_roots() -> tuple[str, ...]:
+    """Return machine-owned Program Files roots from the 64-bit registry view."""
+    hklm = getattr(winreg, "HKEY_LOCAL_MACHINE", None)
+    if hklm is None:
+        return ()
+    key = None
+    roots: list[str] = []
+    try:
+        access = getattr(winreg, "KEY_READ", 0x20019)
+        access |= getattr(winreg, "KEY_WOW64_64KEY", 0)
+        key = winreg.OpenKey(
+            hklm,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion",
+            0,
+            access,
+        )
+        for value_name in ("ProgramW6432Dir", "ProgramFilesDir", "ProgramFilesDir (x86)"):
+            try:
+                value, _ = winreg.QueryValueEx(key, value_name)
+            except OSError:
+                continue
+            if isinstance(value, str) and value.strip():
+                normalized = ntpath.normcase(ntpath.normpath(value.strip().strip('"')))
+                if normalized not in roots:
+                    roots.append(normalized)
+    except (OSError, AttributeError, TypeError):
+        return ()
+    finally:
+        if key is not None:
+            try:
+                winreg.CloseKey(key)
+            except OSError:
+                pass
+    return tuple(roots)
+
+
+def _program_files_roots() -> tuple[str, ...]:
+    registry_roots = _registry_program_files_roots()
+    if registry_roots:
+        return registry_roots
+    if os.name == "nt":
+        return ()
+    roots: list[str] = []
+    for variable in (
+        "ProgramW6432",
+        "ProgramFiles",
+        "PROGRAMFILES",
+        "ProgramFiles(x86)",
+        "PROGRAMFILES(X86)",
+    ):
+        value = os.environ.get(variable, "").strip().strip('"')
+        if value:
+            normalized = ntpath.normcase(ntpath.normpath(value))
+            if normalized not in roots:
+                roots.append(normalized)
+    return tuple(roots)
+
+
+def _is_protected_system_path(path: str) -> bool:
+    candidate = str(path).strip().strip('"')
+    if not ntpath.isabs(candidate) or ntpath.splitext(candidate)[1].lower() != ".exe":
+        return False
+    candidate = ntpath.normcase(ntpath.normpath(candidate))
+    return any(
+        candidate == root or candidate.startswith(root + "\\")
+        for root in _program_files_roots()
+    )
 
 
 def _run_schtasks(args: list[str]) -> tuple[bool, str, str]:
@@ -72,9 +143,12 @@ _BOOT_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 
 
 def register_boot_task(exe_path: str) -> bool:
+    clean_path = exe_path.strip('"')
+    if not _is_protected_system_path(clean_path):
+        logger.error("Refusing SYSTEM boot task outside Program Files: %s", clean_path)
+        return False
     try:
-        clean_path = exe_path.strip('"')
-        xml = _BOOT_TASK_XML.replace("{exe_path}", clean_path)
+        xml = _BOOT_TASK_XML.replace("{exe_path}", escape(clean_path))
 
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
         try:

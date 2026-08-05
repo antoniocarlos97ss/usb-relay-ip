@@ -286,9 +286,9 @@ class ClientCleanupTests(unittest.TestCase):
         acl_script = (build_dir / "set_shared_acl.ps1").read_text(encoding="utf-8")
 
         self.assertIn(r'CreateDirectory "$COMMONAPPDATA\USBRelay"', installer)
-        self.assertIn(r"$APPDATA\USBRelay\pnp_sessions.json", installer)
+        self.assertIn(r'-LegacyRoot "$APPDATA\USBRelay"', installer)
         self.assertIn(
-            r'IfFileExists "$COMMONAPPDATA\USBRelay\pnp_sessions.json" pnp_migration_done 0',
+            r'IfFileExists "$COMMONAPPDATA\USBRelay\." shared_state_exists shared_state_missing',
             installer,
         )
         self.assertIn("set_shared_acl.ps1", installer)
@@ -304,7 +304,7 @@ class ClientCleanupTests(unittest.TestCase):
             'DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "USBRelayClient"',
             normalized_installer,
         )
-        self.assertIn("Get-ChildItem", acl_script)
+        self.assertIn("EnumerateFileSystemInfos", acl_script)
 
 
 if __name__ == "__main__":

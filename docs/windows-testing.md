@@ -61,6 +61,14 @@ Pré-requisitos:
 
 > Não habilite a workflow self-hosted para `pull_request`, `pull_request_target` ou pushes automáticos. Código de workflow executado em um runner administrativo tem acesso à máquina e à rede.
 
+### Política de proteção do piloto
+
+- O workflow só pode ser disparado a partir de uma **protected branch** (ou de uma ref coberta por um ruleset protegido); a própria execução exige `github.ref_protected == true`.
+- Crie o GitHub **Environment `usbip-pilot`** e configure nele **required reviewers**. A aprovação do Environment deve ocorrer antes de qualquer step que use o runner self-hosted ou o secret.
+- Mantenha `USB_RELAY_PILOT_API_KEY` exclusivamente como secret do Environment e disponível somente no step de execução do ciclo. Não o copie para inputs, argumentos, logs ou artifacts.
+- A branch protegida deve exigir pull request, checks verdes e os reviewers responsáveis pelo piloto. Não conceda bypass aos operadores do runner.
+- Se a branch ou o Environment perder essa política, não execute o piloto: corrija a proteção no GitHub antes de reautorizar a workflow.
+
 ## 4. Executar o piloto manual
 
 Abra **Actions → Windows Hardware Pilot → Run workflow** e informe:
@@ -84,7 +92,15 @@ A workflow rejeita `VID=0000`, `PID=0000`, identidade ausente ou ambígua. Depoi
 
 A execução é destrutiva para a sessão escolhida: o dispositivo será temporariamente desconectado e reconectado.
 
-## 5. Cenários manuais adicionais
+## 5. Instalação e desinstalação do Client
+
+O Client instalado fica em `Program Files\USBRelayClient`; o executável usado pela tarefa `SYSTEM` nunca deve ser carregado de `LocalAppData`, de um checkout ou de um script. O estado compartilhado fica em `ProgramData\USBRelay` e não concede `Modify` a `Users`.
+
+- A desinstalação interativa pergunta se o estado compartilhado, incluindo a chave de API, deve ser removido.
+- A desinstalação silenciosa (`/S`) **preserva deterministicamente** o estado compartilhado e a chave de API; esse comportamento é intencional para evitar perda silenciosa de credenciais.
+- Para apagar o estado, use a desinstalação interativa e confirme a pergunta. A remoção só deve operar na raiz `ProgramData\USBRelay` e recusa reparse points/junctions.
+
+## 6. Cenários manuais adicionais
 
 Mesmo com o ciclo self-hosted verde, execute separadamente:
 
