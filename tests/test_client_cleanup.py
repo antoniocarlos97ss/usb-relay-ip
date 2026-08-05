@@ -28,10 +28,13 @@ pyqt6 = types.ModuleType("PyQt6")
 pyqt6.QtCore = qtcore
 pyqt6.QtGui = qtgui
 pyqt6.QtWidgets = qtwidgets
-sys.modules.setdefault("PyQt6", pyqt6)
-sys.modules.setdefault("PyQt6.QtCore", qtcore)
-sys.modules.setdefault("PyQt6.QtGui", qtgui)
-sys.modules.setdefault("PyQt6.QtWidgets", qtwidgets)
+# This module exercises client.main, so it requires the complete local Qt
+# surface above.  Do not silently inherit a narrower stub from an earlier test
+# module; that makes collection depend on unittest's import order.
+sys.modules["PyQt6"] = pyqt6
+sys.modules["PyQt6.QtCore"] = qtcore
+sys.modules["PyQt6.QtGui"] = qtgui
+sys.modules["PyQt6.QtWidgets"] = qtwidgets
 
 from client import main
 

@@ -1,3 +1,4 @@
+import importlib
 import sys
 import types
 import unittest
@@ -31,8 +32,10 @@ class _SignalDescriptor:
 
 
 class _FakeQThread:
+    received_parents = []
+
     def __init__(self, parent=None):
-        self.parent = parent
+        type(self).received_parents.append(parent)
 
     def wait(self, *_args, **_kwargs):
         return True
@@ -42,16 +45,47 @@ def _pyqt_signal(*_args, **_kwargs):
     return _SignalDescriptor()
 
 
-if "PyQt6.QtCore" not in sys.modules:
+def _load_detach_worker_with_isolated_qt():
     pyqt6 = types.ModuleType("PyQt6")
     qtcore = types.ModuleType("PyQt6.QtCore")
     qtcore.QThread = _FakeQThread
     qtcore.pyqtSignal = _pyqt_signal
     pyqt6.QtCore = qtcore
-    sys.modules["PyQt6"] = pyqt6
-    sys.modules["PyQt6.QtCore"] = qtcore
 
-from client.core.usbip_worker import DetachWorker
+    # PyQt6 is process-global, and other test modules install incompatible
+    # stubs.  Import the worker with this test's stubs only, then restore the
+    # caller's module state so either unittest module order remains valid.
+    qt_modules = {
+        "PyQt6": pyqt6,
+        "PyQt6.QtCore": qtcore,
+    }
+    previous_qt_modules = {
+        name: sys.modules.get(name)
+        for name in qt_modules
+    }
+    missing = object()
+    previous_worker = sys.modules.pop("client.core.usbip_worker", missing)
+    core_package = importlib.import_module("client.core")
+    previous_worker_attribute = core_package.__dict__.pop("usbip_worker", missing)
+    sys.modules.update(qt_modules)
+    try:
+        module = importlib.import_module("client.core.usbip_worker")
+    except Exception:
+        if previous_worker is not missing:
+            sys.modules["client.core.usbip_worker"] = previous_worker
+        if previous_worker_attribute is not missing:
+            core_package.usbip_worker = previous_worker_attribute
+        raise
+    finally:
+        for name, previous in previous_qt_modules.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+    return module.DetachWorker
+
+
+DetachWorker = _load_detach_worker_with_isolated_qt()
 
 
 class DetachWorkerTests(unittest.TestCase):
@@ -91,9 +125,11 @@ class DetachWorkerTests(unittest.TestCase):
 
     def test_positional_parent_argument_remains_backward_compatible(self):
         parent = object()
-        worker = DetachWorker("1-11", 7, "1234", "abcd", parent)
+        _FakeQThread.received_parents.clear()
 
-        self.assertIs(parent, worker.parent)
+        DetachWorker("1-11", 7, "1234", "abcd", parent)
+
+        self.assertEqual([parent], _FakeQThread.received_parents)
 
     def test_shutdown_detach_forwards_a_bounded_command_timeout(self):
         worker = DetachWorker(

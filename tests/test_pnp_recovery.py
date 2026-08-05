@@ -18,8 +18,10 @@ qtcore.QThread = type(
 qtcore.pyqtSignal = lambda *args: Mock()
 pyqt6 = types.ModuleType("PyQt6")
 pyqt6.QtCore = qtcore
-sys.modules.setdefault("PyQt6", pyqt6)
-sys.modules.setdefault("PyQt6.QtCore", qtcore)
+# Recovery tests need a QThread-capable stub even when a UI-only test installed
+# a narrower QtCore module first.
+sys.modules["PyQt6"] = pyqt6
+sys.modules["PyQt6.QtCore"] = qtcore
 
 from client.core import operation_coordinator
 from client.core.pnp_recovery import (
