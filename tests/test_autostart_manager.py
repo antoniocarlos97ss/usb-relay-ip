@@ -1,5 +1,24 @@
+import sys
+import types
 import unittest
 from unittest.mock import Mock, patch
+
+
+if "winreg" not in sys.modules:
+    try:
+        import winreg  # noqa: F401
+    except ImportError:
+        winreg = types.ModuleType("winreg")
+        winreg.HKEY_CURRENT_USER = object()
+        winreg.KEY_SET_VALUE = 1
+        winreg.KEY_QUERY_VALUE = 2
+        winreg.REG_SZ = 1
+        winreg.OpenKey = lambda *args, **kwargs: None
+        winreg.SetValueEx = lambda *args, **kwargs: None
+        winreg.QueryValueEx = lambda *args, **kwargs: None
+        winreg.DeleteValue = lambda *args, **kwargs: None
+        winreg.CloseKey = lambda *args, **kwargs: None
+        sys.modules["winreg"] = winreg
 
 
 class TestAutostartManagerHost(unittest.TestCase):
@@ -67,6 +86,19 @@ class TestAutostartManagerHost(unittest.TestCase):
 
 
 class TestAutostartManagerClient(unittest.TestCase):
+
+    def test_boot_task_xml_escapes_command_and_separates_python_script_arguments(self):
+        from client.core.autostart_manager import _render_boot_task_xml
+
+        xml = _render_boot_task_xml(
+            r"C:\Program Files\A&B\python.exe",
+            [r"C:\work dir\client<main>.py"],
+        )
+
+        self.assertIn(r"<Command>C:\Program Files\A&amp;B\python.exe</Command>", xml)
+        self.assertIn("client&lt;main&gt;.py", xml)
+        self.assertIn("--headless", xml)
+        self.assertNotIn("python.exe</Command>\n      <Arguments>--headless", xml)
 
     @patch("client.core.autostart_manager.subprocess.run")
     def test_register_startup_success(self, mock_run):

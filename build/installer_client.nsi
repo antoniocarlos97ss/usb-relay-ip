@@ -41,6 +41,24 @@ Section "USB Relay IP Client" SEC01
     SetOutPath "$INSTDIR"
     File /r "..\\dist\\USBRelayClient\\*"
 
+    ; Shared state used by SYSTEM headless and the interactive GUI.
+    ; DACL: SYSTEM + Administrators full control; installing user's SID modify.
+    CreateDirectory "$COMMONAPPDATA\USBRelay"
+    ; Upgrade bridge: SYSTEM cannot see the interactive user's legacy APPDATA.
+    ; Never overwrite an existing shared file; the Python loader merges both
+    ; copies by observed_at when the GUI later runs.
+    IfFileExists "$COMMONAPPDATA\USBRelay\pnp_sessions.json" pnp_migration_done 0
+    IfFileExists "$APPDATA\USBRelay\pnp_sessions.json" 0 pnp_migration_done
+    CopyFiles /SILENT "$APPDATA\USBRelay\pnp_sessions.json" "$COMMONAPPDATA\USBRelay\pnp_sessions.json"
+pnp_migration_done:
+    InitPluginsDir
+    File /oname=$PLUGINSDIR\set_shared_acl.ps1 "set_shared_acl.ps1"
+    ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\set_shared_acl.ps1" -TargetPath "$COMMONAPPDATA\USBRelay"' $0
+    ${If} $0 != 0
+        MessageBox MB_ICONSTOP|MB_OK "Falha ao proteger o estado compartilhado USBRelay (PowerShell exit $0). A instalação será interrompida."
+        Abort
+    ${EndIf}
+
     ; Install USBip driver (VHCI) only if not already present
     ReadRegDWORD $0 HKLM "SYSTEM\CurrentControlSet\Services\usbip2_ude" "Type"
     ${If} ${Errors}
@@ -73,6 +91,10 @@ SectionEnd
 
 Section "Uninstall"
     SetShellVarContext current
+    ; Stop and remove both startup mechanisms before deleting binaries.
+    ExecWait 'schtasks.exe /End /TN "USBRelayClientBoot"' $0
+    ExecWait 'schtasks.exe /Delete /TN "USBRelayClientBoot" /F' $0
+    DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "USBRelayClient"
     IfFileExists "$PROGRAMFILES64\\USBip\\unins000.exe" 0 +2
     ExecWait '"$PROGRAMFILES64\\USBip\\unins000.exe" /VERYSILENT /NORESTART'
     Delete "$DESKTOP\\USB Relay IP Client.lnk"

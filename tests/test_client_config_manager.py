@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import os
 import tempfile
 import unittest
@@ -6,6 +7,16 @@ from datetime import datetime
 from unittest.mock import patch
 
 from client.core import config_manager
+
+
+def _add_client_device_in_process(root: str, vid: str, pid: str, start_event) -> None:
+    from unittest.mock import patch as child_patch
+    from client.core import config_manager as child_config
+
+    with child_patch.object(child_config, "_config_dir", return_value=root), \
+         child_patch.object(child_config, "_shared_config_dir", return_value=root):
+        start_event.wait(10)
+        child_config.add_permanent_device(vid, pid, f"Device {vid}:{pid}")
 
 
 class TestClientScheduledReconnectConfig(unittest.TestCase):
@@ -58,6 +69,66 @@ class TestClientScheduledReconnectConfig(unittest.TestCase):
         self.assertFalse(device.scheduled_reconnect_enabled)
         self.assertEqual(device.scheduled_reconnect_interval_hours, 24)
         self.assertEqual(device.last_scheduled_reconnect_at, "")
+
+    def test_default_shared_config_does_not_hide_nondefault_user_mirror(self):
+        user_dir = os.path.join(self._tmpdir, "user")
+        shared_dir = os.path.join(self._tmpdir, "shared")
+        os.makedirs(user_dir, exist_ok=True)
+        os.makedirs(shared_dir, exist_ok=True)
+        with open(os.path.join(user_dir, "client_config.json"), "w", encoding="utf-8") as stream:
+            json.dump({
+                "host_ip": "10.0.0.55",
+                "permanent_devices": [{"vid": "1234", "pid": "abcd", "description": "Token"}],
+            }, stream)
+        with open(os.path.join(shared_dir, "client_config.json"), "w", encoding="utf-8") as stream:
+            json.dump(config_manager.ClientConfig().model_dump(), stream, default=str)
+
+        with patch("client.core.config_manager._config_dir", return_value=user_dir), \
+             patch("client.core.config_manager._shared_config_dir", return_value=shared_dir):
+            config = config_manager.load_config()
+
+        self.assertEqual("10.0.0.55", config.host_ip)
+        self.assertEqual([("1234", "abcd")], [(item.vid, item.pid) for item in config.permanent_devices])
+
+    def test_newer_nondefault_user_config_wins_and_is_promoted_to_shared(self):
+        user_dir = os.path.join(self._tmpdir, "conflict-user")
+        shared_dir = os.path.join(self._tmpdir, "conflict-shared")
+        os.makedirs(user_dir, exist_ok=True)
+        os.makedirs(shared_dir, exist_ok=True)
+        user_path = os.path.join(user_dir, "client_config.json")
+        shared_path = os.path.join(shared_dir, "client_config.json")
+        with open(shared_path, "w", encoding="utf-8") as stream:
+            json.dump({"host_ip": "10.0.0.10"}, stream)
+        with open(user_path, "w", encoding="utf-8") as stream:
+            json.dump({"host_ip": "10.0.0.20"}, stream)
+        os.utime(shared_path, (1000, 1000))
+        os.utime(user_path, (2000, 2000))
+
+        with patch("client.core.config_manager._config_dir", return_value=user_dir), \
+             patch("client.core.config_manager._shared_config_dir", return_value=shared_dir):
+            config = config_manager.load_config()
+            with open(shared_path, "r", encoding="utf-8") as stream:
+                promoted = json.load(stream)
+
+        self.assertEqual("10.0.0.20", config.host_ip)
+        self.assertEqual("10.0.0.20", promoted["host_ip"])
+
+    def test_corrupt_shared_config_falls_back_to_valid_user_mirror(self):
+        user_dir = os.path.join(self._tmpdir, "fallback-user")
+        shared_dir = os.path.join(self._tmpdir, "fallback-shared")
+        os.makedirs(user_dir, exist_ok=True)
+        os.makedirs(shared_dir, exist_ok=True)
+        with open(os.path.join(user_dir, "client_config.json"), "w", encoding="utf-8") as stream:
+            json.dump({"host_ip": "10.0.0.77"}, stream)
+        with open(os.path.join(shared_dir, "client_config.json"), "w", encoding="utf-8") as stream:
+            stream.write("{invalid")
+
+        with patch("client.core.config_manager._config_dir", return_value=user_dir), \
+             patch("client.core.config_manager._shared_config_dir", return_value=shared_dir):
+            config = config_manager.load_config()
+
+        self.assertEqual("10.0.0.77", config.host_ip)
+        self.assertTrue(os.path.exists(os.path.join(shared_dir, "client_config.json.bak")))
 
     def test_enable_scheduled_reconnect_creates_permanent_device(self):
         config_manager.enable_scheduled_reconnect("046D", "C31C")
@@ -130,3 +201,25 @@ class TestClientScheduledReconnectConfig(unittest.TestCase):
         self.assertEqual(config.permanent_devices[0].vid, "046d")
         self.assertEqual(config.permanent_devices[0].pid, "c31c")
         self.assertTrue(config_manager.is_permanent("046D", "C31C"))
+
+    def test_concurrent_process_updates_preserve_all_devices(self):
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        identities = [(f"{index:04x}", f"{index + 100:04x}") for index in range(1, 5)]
+        workers = [
+            ctx.Process(
+                target=_add_client_device_in_process,
+                args=(self._tmpdir, vid, pid, start_event),
+            )
+            for vid, pid in identities
+        ]
+        for worker in workers:
+            worker.start()
+        start_event.set()
+        for worker in workers:
+            worker.join(15)
+            self.assertEqual(0, worker.exitcode)
+
+        config = config_manager.load_config()
+        observed = {(item.vid, item.pid) for item in config.permanent_devices}
+        self.assertEqual(set(identities), observed)

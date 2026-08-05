@@ -2,8 +2,8 @@ import atexit
 import faulthandler
 import logging
 import os
-import subprocess
 import sys
+import threading
 import time
 import traceback
 
@@ -111,14 +111,11 @@ def _ensure_usbip(parent=None) -> bool:
 
 
 def _emergency_cleanup():
-    """Last-resort: kill all usbip.exe processes on abnormal exit."""
+    """Last-resort cleanup for usbip children started by this process."""
     try:
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "usbip.exe"],
-            capture_output=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        from client.core import usbip_wrapper
+
+        usbip_wrapper.kill_all_subprocesses()
     except Exception:
         pass
 
@@ -126,76 +123,223 @@ def _emergency_cleanup():
 atexit.register(_emergency_cleanup)
 
 
-def run_headless():
+def _monitor_headless(
+    api_client,
+    initial_devices,
+    stop_event: threading.Event | None = None,
+    refresh_seconds: int = 10,
+    config_signature=None,
+):
+    from client.core import config_manager
+    from client.core.pnp_recovery import PnpRecoveryMonitor
+
+    logger = logging.getLogger(__name__)
+    shutdown = stop_event or threading.Event()
+    monitor = PnpRecoveryMonitor(api_client, poll_seconds=10)
+    initial_monitored = initial_devices
+    if config_signature is not None:
+        initial_monitored = _filter_permanent_devices(
+            initial_devices,
+            config_manager.load_config(),
+        )
+    monitor.update_devices(initial_monitored)
+    monitor.start()
+    logger.info("Headless PnP recovery monitor started")
+    try:
+        while not shutdown.wait(max(1, refresh_seconds)):
+            if config_signature is not None:
+                current_config = config_manager.load_config()
+                if _headless_config_signature(current_config) != config_signature:
+                    logger.info("Headless configuration changed; restarting attach evaluation")
+                    return True
+                api_client.update_config(
+                    current_config.host_ip,
+                    current_config.host_port,
+                    current_config.api_key,
+                )
+                monitor.update_host_config(
+                    current_config.host_ip,
+                    current_config.host_port,
+                    current_config.api_key,
+                )
+            devices = api_client.get_devices(timeout=3.0)
+            if api_client.is_connected():
+                monitored = (
+                    _filter_permanent_devices(devices, current_config)
+                    if config_signature is not None
+                    else devices
+                )
+                monitor.update_devices(monitored)
+    except KeyboardInterrupt:
+        logger.info("Headless monitor interrupted")
+    finally:
+        monitor.stop()
+    return False
+
+
+def _headless_config_signature(config):
+    permanent = tuple(sorted(
+        (device.vid.lower(), device.pid.lower())
+        for device in config.permanent_devices
+    ))
+    return config.host_ip, config.host_port, config.api_key, permanent
+
+
+def _filter_permanent_devices(devices, config):
+    permanent = {
+        (device.vid.lower(), device.pid.lower())
+        for device in config.permanent_devices
+    }
+    return [
+        device for device in devices
+        if (device.vid.lower(), device.pid.lower()) in permanent
+    ]
+
+
+def run_headless(
+    max_attempts: int | None = None,
+    retry_seconds: float = 10,
+    stop_event: threading.Event | None = None,
+):
     logger = logging.getLogger(__name__)
     from client.api.host_client import HostApiClient
-    from client.core import config_manager, usbip_wrapper
+    from client.core import config_manager, operation_coordinator, usbip_wrapper
+    from client.core.pnp_recovery import _wait_pnp_healthy
+    from client.core.scheduled_reconnect import _run_reconnect_cycle
 
     config = config_manager.load_config()
-    if not config.host_ip or not config.permanent_devices:
-        logger.info("No host IP or permanent devices configured, nothing to do in headless mode")
-        return
-
     api_client = HostApiClient(
         host_ip=config.host_ip,
         host_port=config.host_port,
         api_key=config.api_key,
     )
 
-    max_attempts = 20
-    for attempt in range(max_attempts):
-        if attempt > 0:
-            time.sleep(10)
+    shutdown = stop_event or threading.Event()
+    attempt = 0
+    while not shutdown.is_set() and (max_attempts is None or attempt < max(1, max_attempts)):
+        if attempt > 0 and retry_seconds > 0:
+            if shutdown.wait(retry_seconds):
+                return
+        attempt += 1
+
+        config = config_manager.load_config()
+        if not config.host_ip or not config.permanent_devices:
+            logger.info("No host IP or permanent devices configured; headless mode is waiting")
+            continue
+        api_client.update_config(config.host_ip, config.host_port, config.api_key)
 
         devices = api_client.get_devices()
         if not api_client.is_connected():
-            logger.warning(f"Host not reachable (attempt {attempt+1}/{max_attempts})")
+            total = str(max_attempts) if max_attempts is not None else "continuous"
+            logger.warning(f"Host not reachable (attempt {attempt}/{total})")
             continue
 
         all_done = True
         for perm_device in config.permanent_devices:
-            matched = None
-            for d in devices:
-                if d.vid == perm_device.vid and d.pid == perm_device.pid:
-                    matched = d
-                    break
-
-            if matched and matched.state == "Shared":
-                logger.info(f"Attaching {matched.busid}")
-                result = usbip_wrapper.attach_device(
-                    config.host_ip,
-                    matched.busid,
-                    vid=matched.vid,
-                    pid=matched.pid,
+            key = perm_device.vid.lower(), perm_device.pid.lower()
+            matches = [
+                device for device in devices
+                if (device.vid.lower(), device.pid.lower()) == key
+            ]
+            if len(matches) != 1:
+                logger.error(
+                    "Headless attach requires one unambiguous host device for %s:%s; found %s",
+                    perm_device.vid,
+                    perm_device.pid,
+                    len(matches),
                 )
-                if result.success:
-                    logger.info(f"Attached {matched.busid}")
+                all_done = False
+                continue
+
+            matched = matches[0]
+            if matched.state == "Attached":
+                local_query = usbip_wrapper.query_attached_devices()
+                local_matches = [
+                    item for item in local_query.devices
+                    if item.busid == matched.busid
+                    and (item.vid.lower(), item.pid.lower()) == key
+                ] if local_query.success else []
+                healthy = (
+                    local_query.success
+                    and len(local_matches) == 1
+                    and _wait_pnp_healthy(matched, time.monotonic() + 15)
+                )
+                if healthy:
+                    continue
+                logger.warning(
+                    "Host reports %s Attached but local session/PnP is not healthy; recovering",
+                    matched.busid,
+                )
+                recovered, message = _run_reconnect_cycle(
+                    api_client,
+                    matched,
+                    record_completion=False,
+                )
+                if recovered:
+                    logger.info(f"Recovered stale attached session {matched.busid}")
                 else:
-                    logger.error(f"Attach failed {matched.busid}: {result.message}")
-                    logger.info(f"Trying unbind+rebind on host for {matched.busid}")
-                    api_client.unbind_device(matched.busid)
-                    time.sleep(2)
-                    api_client.bind_device(matched.busid)
-                    time.sleep(2)
-                    result2 = usbip_wrapper.attach_device(
+                    logger.error(f"Verified recovery failed for {matched.busid}: {message}")
+                    all_done = False
+                continue
+            if matched.state != "Shared":
+                all_done = False
+                continue
+
+            logger.info(f"Attaching {matched.busid}")
+            if not operation_coordinator.try_acquire(matched.vid, matched.pid, matched.busid):
+                logger.warning("Another operation is running for %s", matched.busid)
+                all_done = False
+                continue
+            result = None
+            healthy = False
+            try:
+                try:
+                    result = usbip_wrapper.attach_device(
                         config.host_ip,
                         matched.busid,
                         vid=matched.vid,
                         pid=matched.pid,
                     )
-                    if result2.success:
-                        logger.info(f"Attached {matched.busid} after unbind+rebind")
-                    else:
-                        logger.error(f"Attach still failed after unbind+rebind: {result2.message}")
-                        all_done = False
-            elif not (matched and matched.state == "Attached"):
+                    healthy = result.success and _wait_pnp_healthy(
+                        matched,
+                        time.monotonic() + 15,
+                    )
+                except Exception:
+                    logger.exception("Initial attach crashed for %s", matched.busid)
+            finally:
+                operation_coordinator.release(matched.vid, matched.pid, matched.busid)
+            if healthy:
+                logger.info(f"Attached and validated {matched.busid}")
+                continue
+
+            detail = result.message if result is not None else "unexpected attach exception"
+            logger.error(f"Initial attach/validation failed for {matched.busid}: {detail}")
+            logger.info(f"Running verified host/client recovery cycle for {matched.busid}")
+            recovered, message = _run_reconnect_cycle(
+                api_client,
+                matched,
+                record_completion=False,
+            )
+            if recovered:
+                logger.info(f"Recovered {matched.busid} through verified host/client cycle")
+            else:
+                logger.error(f"Verified recovery failed for {matched.busid}: {message}")
                 all_done = False
 
         if all_done:
-            logger.info("All permanent devices attached, exiting")
+            logger.info("All permanent devices attached; continuing in recovery monitor mode")
+            reconfigure = _monitor_headless(
+                api_client,
+                devices,
+                stop_event=shutdown,
+                config_signature=_headless_config_signature(config),
+            )
+            if reconfigure is True:
+                continue
             return
 
-    logger.warning("Timeout waiting for permanent devices")
+    if max_attempts is not None and not shutdown.is_set():
+        logger.warning("Timeout waiting for permanent devices")
 
 
 def main():
@@ -278,9 +422,8 @@ def main():
     tray._quit_action.triggered.connect(_quit)
 
     # commitDataRequest fires on Windows shutdown/restart/logoff.
-    # The handler must return quickly (<5s) to avoid the "app is preventing
-    # shutdown" dialog.  quit_app_with_detach() is now non-blocking (async
-    # DetachWorkers), so _quit() returns in milliseconds.
+    # Cleanup uses bounded waits and owner-scoped subprocess cancellation so
+    # workers cannot outlive their Qt owners during shutdown.
     app.commitDataRequest.connect(lambda _manager: _quit())
 
     # aboutToQuit fires after app.quit() has been accepted by the event loop.

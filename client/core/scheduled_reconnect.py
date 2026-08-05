@@ -7,11 +7,13 @@ from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
 from client.api.host_client import HostApiClient
 from client.core import config_manager, operation_coordinator, usbip_wrapper
+from client.core.pnp_recovery import _wait_pnp_healthy
 from shared.models import UsbDevice
 
 logger = logging.getLogger(__name__)
 
 FAILURE_COOLDOWN = timedelta(minutes=15)
+HOST_TRANSITION_TIMEOUT_SECONDS = 10
 
 
 def _utc_now() -> datetime:
@@ -38,54 +40,159 @@ def _format_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def _find_matching_device(devices: list[UsbDevice], vid: str, pid: str) -> UsbDevice | None:
+def find_unique_identity_match(
+    devices: list[UsbDevice], vid: str, pid: str
+) -> UsbDevice | None:
     key = _normalize_key(vid, pid)
-    for device in devices:
-        if _normalize_key(device.vid, device.pid) == key:
-            return device
-    return None
+    matches = [
+        device for device in devices
+        if _normalize_key(device.vid, device.pid) == key
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _mark_last_run(vid: str, pid: str, when: datetime) -> None:
-    config = config_manager.load_config()
-    key = _normalize_key(vid, pid)
-    for device in config.permanent_devices:
-        if _normalize_key(device.vid, device.pid) == key:
-            device.last_scheduled_reconnect_at = _format_timestamp(when)
-            config_manager.save_config(config)
-            return
+    config_manager.mark_scheduled_reconnect_completed(
+        vid,
+        pid,
+        _format_timestamp(when),
+    )
 
 
-def _run_reconnect_cycle_unlocked(api_client: HostApiClient, device: UsbDevice) -> tuple[bool, str]:
-    host_devices = api_client.get_devices()
-    matched = next((item for item in host_devices if item.busid == device.busid), None)
-    if matched is None:
-        identity_matches = [
-            item for item in host_devices
-            if _normalize_key(item.vid, item.pid) == _normalize_key(device.vid, device.pid)
+def _wait_host_state(
+    api_client: HostApiClient,
+    busid: str,
+    expected_state: str,
+    timeout: float = HOST_TRANSITION_TIMEOUT_SECONDS,
+    cancel_event: threading.Event | None = None,
+    expected_vid: str = "",
+    expected_pid: str = "",
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not (cancel_event and cancel_event.is_set()):
+        remaining = deadline - time.monotonic()
+        matches = [
+            item
+            for item in api_client.get_devices(timeout=min(2.0, max(0.2, remaining)))
+            if item.busid == busid
         ]
-        matched = identity_matches[0] if len(identity_matches) == 1 else None
+        if len(matches) > 1:
+            return False
+        for item in matches:
+            if expected_vid and expected_pid and _normalize_key(item.vid, item.pid) != _normalize_key(
+                expected_vid, expected_pid
+            ):
+                return False
+            if item.state == expected_state:
+                return True
+        if cancel_event:
+            if cancel_event.wait(0.5):
+                return False
+        else:
+            time.sleep(0.5)
+    return False
+
+
+def _host_busid_identity_is_current(
+    api_client: HostApiClient,
+    expected: UsbDevice,
+) -> bool:
+    current = [
+        item
+        for item in api_client.get_devices(timeout=2)
+        if item.busid == expected.busid
+    ]
+    return (
+        len(current) == 1
+        and _normalize_key(current[0].vid, current[0].pid)
+        == _normalize_key(expected.vid, expected.pid)
+    )
+
+
+def _run_reconnect_cycle_unlocked(
+    api_client: HostApiClient,
+    device: UsbDevice,
+    cancel_event: threading.Event | None = None,
+    record_completion: bool = True,
+) -> tuple[bool, str]:
+    if cancel_event and cancel_event.is_set():
+        return False, "reconnect interrupted during shutdown"
+    host_devices = api_client.get_devices()
+    busid_matches = [item for item in host_devices if item.busid == device.busid]
+    if len(busid_matches) > 1:
+        return False, f"Multiple host devices claim busid {device.busid}"
+    matched = busid_matches[0] if busid_matches else None
+    if matched is not None and _normalize_key(matched.vid, matched.pid) != _normalize_key(
+        device.vid, device.pid
+    ):
+        return False, f"Device identity changed at busid {device.busid}"
+    if matched is None:
+        matched = find_unique_identity_match(host_devices, device.vid, device.pid)
     if not matched:
         return False, f"Device {device.vid}:{device.pid} is no longer available"
 
     if matched.state == "Attached":
-        port = usbip_wrapper.find_port_for_busid(matched.busid)
-        if port is None:
-            return False, f"Cannot find attached port for {matched.busid}"
-        detach_result = usbip_wrapper.detach_device(port)
-        if not detach_result.success:
-            return False, detach_result.message
+        local_query = usbip_wrapper.query_attached_devices()
+        if not local_query.success:
+            return False, f"Local USB/IP state is unknown: {local_query.error}"
+        local_matches = [item for item in local_query.devices if item.busid == matched.busid]
+        if len(local_matches) > 1:
+            return False, f"Multiple local ports claim busid {matched.busid}"
+        if not local_matches:
+            logger.warning(
+                "No local session exists for %s; continuing with safe host cycle",
+                matched.busid,
+            )
+        else:
+            if cancel_event and cancel_event.is_set():
+                return False, "reconnect interrupted during shutdown"
+            detach_result = usbip_wrapper.detach_busid(
+                matched.busid,
+                port_hint=local_matches[0].port,
+                expected_vid=matched.vid,
+                expected_pid=matched.pid,
+            )
+            if not detach_result.success:
+                return False, detach_result.message
 
+    if cancel_event and cancel_event.is_set():
+        return False, "reconnect interrupted during shutdown"
+    if not _host_busid_identity_is_current(api_client, matched):
+        return False, f"Device identity changed at busid {matched.busid} before unbind"
     if not api_client.unbind_device(matched.busid):
         return False, f"Failed to unbind {matched.busid} on host"
 
-    time.sleep(2)
+    if not _wait_host_state(
+        api_client,
+        matched.busid,
+        "Not shared",
+        cancel_event=cancel_event,
+        expected_vid=matched.vid,
+        expected_pid=matched.pid,
+    ):
+        if cancel_event and cancel_event.is_set():
+            return False, "reconnect interrupted during shutdown"
+        return False, f"Host did not report {matched.busid} as Not shared after unbind"
 
+    if cancel_event and cancel_event.is_set():
+        return False, "reconnect interrupted during shutdown"
     if not api_client.bind_device(matched.busid):
         return False, f"Failed to bind {matched.busid} on host"
 
-    time.sleep(2)
+    if not _wait_host_state(
+        api_client,
+        matched.busid,
+        "Shared",
+        cancel_event=cancel_event,
+        expected_vid=matched.vid,
+        expected_pid=matched.pid,
+    ):
+        if cancel_event and cancel_event.is_set():
+            return False, "reconnect interrupted during shutdown"
+        return False, f"Host did not report {matched.busid} as Shared after bind"
 
+    if cancel_event and cancel_event.is_set():
+        return False, "reconnect interrupted during shutdown"
     attach_result = usbip_wrapper.attach_device(
         api_client.host_ip,
         matched.busid,
@@ -95,15 +202,32 @@ def _run_reconnect_cycle_unlocked(api_client: HostApiClient, device: UsbDevice) 
     if not attach_result.success:
         return False, attach_result.message
 
-    _mark_last_run(matched.vid, matched.pid, _utc_now())
+    validation_deadline = time.monotonic() + 15
+    if not _wait_pnp_healthy(matched, validation_deadline, cancel_event):
+        if cancel_event and cancel_event.is_set():
+            return False, "reconnect interrupted during shutdown"
+        return False, f"Windows PnP validation failed for {matched.busid}"
+
+    if record_completion:
+        _mark_last_run(matched.vid, matched.pid, _utc_now())
     return True, matched.busid
 
 
-def _run_reconnect_cycle(api_client: HostApiClient, device: UsbDevice) -> tuple[bool, str]:
+def _run_reconnect_cycle(
+    api_client: HostApiClient,
+    device: UsbDevice,
+    cancel_event: threading.Event | None = None,
+    record_completion: bool = True,
+) -> tuple[bool, str]:
     if not operation_coordinator.try_acquire(device.vid, device.pid, device.busid):
         return False, "another reconnect operation is already running"
     try:
-        return _run_reconnect_cycle_unlocked(api_client, device)
+        return _run_reconnect_cycle_unlocked(
+            api_client,
+            device,
+            cancel_event,
+            record_completion,
+        )
     finally:
         operation_coordinator.release(device.vid, device.pid, device.busid)
 
@@ -111,7 +235,13 @@ def _run_reconnect_cycle(api_client: HostApiClient, device: UsbDevice) -> tuple[
 class ScheduledReconnectWorker(QThread):
     result = pyqtSignal(bool, str, str)
 
-    def __init__(self, api_client: HostApiClient, device: UsbDevice, parent=None):
+    def __init__(
+        self,
+        api_client: HostApiClient,
+        device: UsbDevice,
+        parent=None,
+        record_completion: bool = True,
+    ):
         super().__init__(parent)
         self._api_client = HostApiClient(
             host_ip=api_client.host_ip,
@@ -119,10 +249,20 @@ class ScheduledReconnectWorker(QThread):
             api_key=api_client.api_key,
         )
         self._device = device
+        self._cancel_event = threading.Event()
+        self._record_completion = record_completion
+
+    def request_cancel(self):
+        self._cancel_event.set()
 
     def run(self):
         try:
-            success, message = _run_reconnect_cycle(self._api_client, self._device)
+            success, message = _run_reconnect_cycle(
+                self._api_client,
+                self._device,
+                self._cancel_event,
+                self._record_completion,
+            )
         except Exception as exc:
             logger.error("Scheduled reconnect worker crashed: %s", exc, exc_info=True)
             success, message = False, str(exc)
@@ -167,9 +307,18 @@ class ScheduledReconnectController(QObject):
         self._started_at = self._now_provider()
         self._timer.start()
 
-    def stop(self):
+    def stop(self, wait_ms: int = 3000):
         self._stopping = True
         self._timer.stop()
+        workers = list(self._workers)
+        for worker in workers:
+            worker.request_cancel()
+        deadline = time.monotonic() + max(0, wait_ms) / 1000
+        for worker in workers:
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            if remaining_ms <= 0:
+                break
+            worker.wait(remaining_ms)
 
     def update_devices(self, devices: list[UsbDevice]):
         self._devices = list(devices)

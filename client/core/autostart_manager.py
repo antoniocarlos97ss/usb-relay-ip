@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import winreg
+from xml.sax.saxutils import escape
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ _BOOT_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
     </Principal>
   </Principals>
   <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowStartOnDemand>true</AllowStartOnDemand>
@@ -55,20 +57,30 @@ _BOOT_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <StartWhenAvailable>true</StartWhenAvailable>
     <AllowHardTerminate>true</AllowHardTerminate>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{exe_path}</Command>
-      <Arguments>--headless</Arguments>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
     </Exec>
   </Actions>
 </Task>"""
 
 
-def register_boot_task(exe_path: str) -> bool:
+def _render_boot_task_xml(exe_path: str, base_arguments: list[str] | None = None) -> str:
+    command = exe_path.strip('"')
+    arguments = subprocess.list2cmdline([*(base_arguments or []), "--headless"])
+    return (
+        _BOOT_TASK_XML
+        .replace("{command}", escape(command))
+        .replace("{arguments}", escape(arguments))
+    )
+
+
+def register_boot_task(exe_path: str, base_arguments: list[str] | None = None) -> bool:
     try:
-        clean_path = exe_path.strip('"')
-        xml = _BOOT_TASK_XML.replace("{exe_path}", clean_path)
+        xml = _render_boot_task_xml(exe_path, base_arguments)
 
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xml")
         try:
@@ -112,10 +124,14 @@ def unregister_boot_task() -> bool:
     return success
 
 
-def register_logon_run(exe_path: str) -> bool:
+def register_logon_run(exe_path: str, base_arguments: list[str] | None = None) -> bool:
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE)
-        run_value = f'"{exe_path.strip(chr(34))}" --minimized'
+        run_value = subprocess.list2cmdline([
+            exe_path.strip(chr(34)),
+            *(base_arguments or []),
+            "--minimized",
+        ])
         winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, run_value)
         winreg.CloseKey(key)
         logger.info(f"Logon Run key added: {RUN_VALUE}={run_value}")
@@ -139,9 +155,12 @@ def unregister_logon_run() -> bool:
         return False
 
 
-def register_startup(exe_path: str) -> tuple[bool, bool]:
-    logon_ok = register_logon_run(exe_path)
-    boot_ok = register_boot_task(exe_path)
+def register_startup(
+    exe_path: str,
+    base_arguments: list[str] | None = None,
+) -> tuple[bool, bool]:
+    logon_ok = register_logon_run(exe_path, base_arguments)
+    boot_ok = register_boot_task(exe_path, base_arguments)
     if logon_ok:
         logger.info("Logon startup configured (HKCU Run)")
     if boot_ok:

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 
@@ -58,9 +59,11 @@ _DESCRIPTOR_FAILURE_MARKER = "DEVICE_DESCRIPTOR_FAILURE"
 _SESSION_LOCK = threading.Lock()
 _SESSION_CORRELATIONS: dict[str, "SessionCorrelation"] = {}
 _SESSION_CORRELATIONS_LOADED = False
+_SESSION_FILE_SIGNATURE: tuple[int, int] | None = None
 _SESSION_FILE = "pnp_sessions.json"
 _QUERY_LOCK = threading.Lock()
 _QUERY_PROCESSES: set[subprocess.Popen] = set()
+_QUERY_OWNERS: dict[subprocess.Popen, int] = {}
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -95,6 +98,7 @@ class SessionCorrelation:
     instance_ids: tuple[str, ...]
     observed_at: float
     basis: str
+    local_port: int | None = None
 
 
 def _normalize_instance_id(value: str) -> str:
@@ -104,18 +108,89 @@ def _normalize_instance_id(value: str) -> str:
 def _session_path() -> str:
     from shared.constants import CONFIG_DIR_NAME
 
-    base = os.environ.get("APPDATA", os.path.expanduser("~"))
+    base = (
+        os.environ.get("PROGRAMDATA")
+        or os.environ.get("ALLUSERSPROFILE")
+        or os.environ.get("APPDATA")
+        or os.path.expanduser("~")
+    )
     return os.path.join(base, CONFIG_DIR_NAME, _SESSION_FILE)
 
 
-def _load_session_correlations_locked() -> None:
-    global _SESSION_CORRELATIONS_LOADED
-    if _SESSION_CORRELATIONS_LOADED:
-        return
+def _legacy_session_path() -> str:
+    from shared.constants import CONFIG_DIR_NAME
+
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, CONFIG_DIR_NAME, _SESSION_FILE)
+
+
+def _session_file_signature(path: str) -> tuple[int, int] | None:
     try:
-        with open(_session_path(), "r", encoding="utf-8") as stream:
-            raw = json.load(stream)
-        for item in raw:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+@contextmanager
+def _session_storage_lock(timeout: float = 5.0):
+    lock_path = _session_path() + ".lock"
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    deadline = time.monotonic() + max(0.1, timeout)
+
+    with open(lock_path, "a+b") as stream:
+        if os.name == "nt":
+            import msvcrt
+
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out locking {lock_path}")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out locking {lock_path}")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _valid_local_port(value) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 255 else None
+
+
+def _decode_session_records(raw, source_path: str) -> dict[str, SessionCorrelation]:
+    if not isinstance(raw, list):
+        raise ValueError("session correlation payload must be a list")
+    records: dict[str, SessionCorrelation] = {}
+    for item in raw:
+        try:
             correlation = SessionCorrelation(
                 busid=str(item["busid"]),
                 vid=str(item["vid"]).lower(),
@@ -123,22 +198,90 @@ def _load_session_correlations_locked() -> None:
                 instance_ids=tuple(_normalize_instance_id(value) for value in item["instance_ids"]),
                 observed_at=float(item.get("observed_at", 0)),
                 basis=str(item.get("basis", "persisted")),
+                local_port=_valid_local_port(item.get("local_port")),
             )
-            if time.time() - correlation.observed_at <= SESSION_TTL_SECONDS:
-                _SESSION_CORRELATIONS[correlation.busid] = correlation
-        _SESSION_CORRELATIONS_LOADED = True
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Skipping invalid PnP session record from %s: %s", source_path, exc)
+            continue
+        if time.time() - correlation.observed_at <= SESSION_TTL_SECONDS:
+            records[correlation.busid] = correlation
+    return records
+
+
+def _storage_signature(shared_path: str, legacy_path: str):
+    shared_signature = _session_file_signature(shared_path)
+    if os.path.normcase(os.path.abspath(legacy_path)) == os.path.normcase(os.path.abspath(shared_path)):
+        return shared_signature, None
+    return shared_signature, _session_file_signature(legacy_path)
+
+
+def _archive_file(path: str, suffix: str) -> None:
+    try:
+        os.replace(path, path + suffix)
+    except OSError:
+        logger.warning("Failed to archive PnP session file %s", path, exc_info=True)
+
+
+def _read_session_file(path: str) -> dict[str, SessionCorrelation]:
+    with open(path, "r", encoding="utf-8") as stream:
+        return _decode_session_records(json.load(stream), path)
+
+
+def _load_session_correlations_locked() -> None:
+    global _SESSION_CORRELATIONS_LOADED, _SESSION_FILE_SIGNATURE
+
+    shared_path = _session_path()
+    legacy_path = _legacy_session_path()
+    same_path = os.path.normcase(os.path.abspath(legacy_path)) == os.path.normcase(
+        os.path.abspath(shared_path)
+    )
+    signature = _storage_signature(shared_path, legacy_path)
+    if _SESSION_CORRELATIONS_LOADED and signature == _SESSION_FILE_SIGNATURE:
+        return
+
+    shared_records: dict[str, SessionCorrelation] = {}
+    legacy_records: dict[str, SessionCorrelation] = {}
+    shared_corrupt = False
+    legacy_loaded = False
+
+    try:
+        shared_records = _read_session_file(shared_path)
     except FileNotFoundError:
-        _SESSION_CORRELATIONS_LOADED = True
+        pass
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-        logger.warning("Failed to load PnP session correlations: %s", exc)
+        logger.warning("Failed to load PnP session correlations from %s: %s", shared_path, exc)
+        _archive_file(shared_path, ".corrupt")
+        shared_corrupt = True
+
+    if not same_path:
         try:
-            os.replace(_session_path(), _session_path() + ".corrupt")
-        except OSError:
+            legacy_records = _read_session_file(legacy_path)
+            legacy_loaded = True
+        except FileNotFoundError:
             pass
-        _SESSION_CORRELATIONS_LOADED = True
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to load legacy PnP session correlations from %s: %s", legacy_path, exc)
+            _archive_file(legacy_path, ".corrupt")
+
+    merged = dict(shared_records)
+    for busid, legacy in legacy_records.items():
+        current = merged.get(busid)
+        if current is None or legacy.observed_at > current.observed_at:
+            merged[busid] = legacy
+
+    _SESSION_CORRELATIONS.clear()
+    _SESSION_CORRELATIONS.update(merged)
+    _SESSION_CORRELATIONS_LOADED = True
+
+    if legacy_loaded or shared_corrupt:
+        if _save_session_correlations_locked() and legacy_loaded:
+            _archive_file(legacy_path, ".migrated")
+
+    _SESSION_FILE_SIGNATURE = _storage_signature(shared_path, legacy_path)
 
 
-def _save_session_correlations_locked() -> None:
+def _save_session_correlations_locked() -> bool:
+    global _SESSION_FILE_SIGNATURE
     path = _session_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -151,14 +294,18 @@ def _save_session_correlations_locked() -> None:
                 "instance_ids": list(item.instance_ids),
                 "observed_at": item.observed_at,
                 "basis": item.basis,
+                "local_port": item.local_port,
             }
             for item in _SESSION_CORRELATIONS.values()
         ]
         with open(tmp_path, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, indent=2)
         os.replace(tmp_path, path)
+        _SESSION_FILE_SIGNATURE = _storage_signature(path, _legacy_session_path())
+        return True
     except OSError as exc:
         logger.warning("Failed to save PnP session correlations: %s", exc)
+        return False
 
 
 def _normalize_text(value) -> str:
@@ -257,6 +404,7 @@ def _derive_correlation(
     pid: str,
     before: PnpSnapshot,
     after: PnpSnapshot,
+    local_port: int | None = None,
 ) -> SessionCorrelation | None:
     before_ids = {_normalize_instance_id(item.instance_id) for item in before.devices}
     new_devices = [
@@ -295,6 +443,7 @@ def _derive_correlation(
         instance_ids=instance_ids,
         observed_at=time.time(),
         basis=basis,
+        local_port=local_port,
     )
 
 
@@ -333,23 +482,25 @@ def list_usb_devices(timeout: int = 5, include_properties: bool = True) -> list[
     if sys.platform != "win32":
         return None
     try:
-        process = subprocess.Popen(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                _QUERY_FULL if include_properties else _QUERY_FAST,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        # Make process creation + ownership registration atomic to cleanup.
         with _QUERY_LOCK:
+            process = subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    _QUERY_FULL if include_properties else _QUERY_FAST,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
             _QUERY_PROCESSES.add(process)
+            _QUERY_OWNERS[process] = threading.get_ident()
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -360,6 +511,7 @@ def list_usb_devices(timeout: int = 5, include_properties: bool = True) -> list[
         finally:
             with _QUERY_LOCK:
                 _QUERY_PROCESSES.discard(process)
+                _QUERY_OWNERS.pop(process, None)
     except OSError as exc:
         logger.warning("PnP query failed: %s", exc)
         return None
@@ -374,9 +526,18 @@ def list_usb_devices(timeout: int = 5, include_properties: bool = True) -> list[
         return None
 
 
-def kill_all_queries() -> None:
+def kill_all_queries(owner_thread_ids: set[int] | None = None) -> None:
     with _QUERY_LOCK:
-        processes = list(_QUERY_PROCESSES)
+        if owner_thread_ids is None:
+            processes = list(_QUERY_PROCESSES)
+        else:
+            processes = [
+                process for process in _QUERY_PROCESSES
+                if _QUERY_OWNERS.get(process) in owner_thread_ids
+            ]
+        for process in processes:
+            _QUERY_PROCESSES.discard(process)
+            _QUERY_OWNERS.pop(process, None)
     for process in processes:
         try:
             process.kill()
@@ -411,38 +572,75 @@ def find_descriptor_failure_code43(statuses: list[PnpDeviceStatus]) -> list[PnpD
 
 
 def clear_session_correlations() -> None:
-    global _SESSION_CORRELATIONS_LOADED
+    global _SESSION_CORRELATIONS_LOADED, _SESSION_FILE_SIGNATURE
     with _SESSION_LOCK:
         _SESSION_CORRELATIONS.clear()
         _SESSION_CORRELATIONS_LOADED = True
+        _SESSION_FILE_SIGNATURE = _session_file_signature(_session_path())
 
 
 def get_session_correlation(busid: str) -> SessionCorrelation | None:
     with _SESSION_LOCK:
-        _load_session_correlations_locked()
-        correlation = _SESSION_CORRELATIONS.get(busid)
-        if correlation and time.time() - correlation.observed_at > SESSION_TTL_SECONDS:
-            _SESSION_CORRELATIONS.pop(busid, None)
+        with _session_storage_lock():
+            _load_session_correlations_locked()
+            correlation = _SESSION_CORRELATIONS.get(busid)
+            if correlation and time.time() - correlation.observed_at > SESSION_TTL_SECONDS:
+                _SESSION_CORRELATIONS.pop(busid, None)
+                _save_session_correlations_locked()
+                return None
+            return correlation
+
+
+def record_session_port(busid: str, vid: str, pid: str, port: int) -> None:
+    global _SESSION_CORRELATIONS_LOADED
+    port = int(port)
+    if not 1 <= port <= 255:
+        raise ValueError(f"Invalid USB/IP port {port}; expected 1..255")
+    with _SESSION_LOCK:
+        with _session_storage_lock():
+            _SESSION_CORRELATIONS_LOADED = False
+            _load_session_correlations_locked()
+            _SESSION_CORRELATIONS[busid] = SessionCorrelation(
+                busid=busid,
+                vid=vid.lower(),
+                pid=pid.lower(),
+                instance_ids=(),
+                observed_at=time.time(),
+                basis="port-only",
+                local_port=port,
+            )
             _save_session_correlations_locked()
-            return None
-        return correlation
+
+
+def get_session_port(busid: str, vid: str = "", pid: str = "") -> int | None:
+    correlation = get_session_correlation(busid)
+    if correlation is None:
+        return None
+    if vid and pid and (correlation.vid, correlation.pid) != (vid.lower(), pid.lower()):
+        return None
+    return correlation.local_port
 
 
 def remove_session_correlation(busid: str) -> None:
+    global _SESSION_CORRELATIONS_LOADED
     with _SESSION_LOCK:
-        _load_session_correlations_locked()
-        if _SESSION_CORRELATIONS.pop(busid, None) is not None:
-            _save_session_correlations_locked()
+        with _session_storage_lock():
+            _SESSION_CORRELATIONS_LOADED = False
+            _load_session_correlations_locked()
+            if _SESSION_CORRELATIONS.pop(busid, None) is not None:
+                _save_session_correlations_locked()
 
 
 def get_busid_for_instance_id(instance_id: str) -> str | None:
     normalized = _normalize_instance_id(instance_id)
     with _SESSION_LOCK:
-        _load_session_correlations_locked()
-        for busid, correlation in _SESSION_CORRELATIONS.items():
-            if normalized in correlation.instance_ids:
-                return busid
-    return None
+        with _session_storage_lock():
+            _load_session_correlations_locked()
+            owners = {
+                busid for busid, correlation in _SESSION_CORRELATIONS.items()
+                if normalized in correlation.instance_ids
+            }
+    return next(iter(owners)) if len(owners) == 1 else None
 
 
 def get_correlated_statuses(busid: str, statuses: list[PnpDeviceStatus]) -> list[PnpDeviceStatus]:
@@ -459,6 +657,7 @@ def register_attached_session(
     pid: str,
     before: PnpSnapshot | None,
     poll_timeout: int = 10,
+    local_port: int | None = None,
 ) -> tuple[bool, str]:
     if sys.platform != "win32":
         return False, "PnP correlation is only available on Windows"
@@ -471,12 +670,22 @@ def register_attached_session(
         after = snapshot_usb_devices(timeout=min(5, remaining))
         if after is None:
             return False, "post-attach PnP snapshot failed"
-        correlation = _derive_correlation(busid, vid, pid, before, after)
+        correlation = _derive_correlation(
+            busid,
+            vid,
+            pid,
+            before,
+            after,
+            local_port=local_port,
+        )
         if correlation is not None:
+            global _SESSION_CORRELATIONS_LOADED
             with _SESSION_LOCK:
-                _load_session_correlations_locked()
-                _SESSION_CORRELATIONS[busid] = correlation
-                _save_session_correlations_locked()
+                with _session_storage_lock():
+                    _SESSION_CORRELATIONS_LOADED = False
+                    _load_session_correlations_locked()
+                    _SESSION_CORRELATIONS[busid] = correlation
+                    _save_session_correlations_locked()
             return True, correlation.basis
         time.sleep(0.5)
     return False, "attach did not produce an unambiguous PnP delta"
@@ -492,7 +701,7 @@ def _find_reenumerated_code43(
         item for item in find_descriptor_failure_code43(statuses)
         if get_busid_for_instance_id(item.instance_id) in (None, busid)
     ]
-    if not failures:
+    if len(failures) != 1:
         return []
 
     if correlation is None:
@@ -505,14 +714,37 @@ def _find_reenumerated_code43(
 
     present_ids = {_normalize_instance_id(item.instance_id) for item in statuses}
 
+    def _device_instance_ids(session: SessionCorrelation) -> set[str]:
+        vid_pid_marker = f"VID_{session.vid.upper()}&PID_{session.pid.upper()}"
+        exact_device_ids = {
+            instance_id for instance_id in session.instance_ids
+            if vid_pid_marker in instance_id
+        }
+        if exact_device_ids:
+            return exact_device_ids
+        non_anchor_ids = {
+            instance_id for instance_id in session.instance_ids
+            if not instance_id.startswith(_USBIP_ROOT_PREFIX)
+        }
+        return non_anchor_ids or set(session.instance_ids)
+
     def _correlated_nodes_vanished(session_busid: str) -> bool:
         session = get_session_correlation(session_busid)
-        return session is not None and not set(session.instance_ids) & present_ids
+        if session is None:
+            return False
+        device_ids = _device_instance_ids(session)
+        return bool(device_ids) and not device_ids & present_ids
 
     if not _correlated_nodes_vanished(busid):
         return []
-    if any(item.busid != busid and _correlated_nodes_vanished(item.busid) for item in attached_devices):
-        return []
+    for item in attached_devices:
+        if item.busid == busid:
+            continue
+        other = get_session_correlation(item.busid)
+        if other is None or not _device_instance_ids(other):
+            return []
+        if _correlated_nodes_vanished(item.busid):
+            return []
     return failures
 
 
