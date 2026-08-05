@@ -52,6 +52,11 @@ class WindowsInstallerSecurityContracts(unittest.TestCase):
         self.assertIn("OrdinalIgnoreCase", self.acl_script)
         self.assertIn("StartsWith", self.acl_script)
         self.assertIn("function Remove-Win32ExtendedPathPrefix", self.acl_script)
+        self.assertIn(
+            "$rootPath + [System.IO.Path]::DirectorySeparatorChar",
+            self.acl_script,
+        )
+        self.assertNotIn("($rootPath + '\\\\')", self.acl_script)
 
     def test_installer_helper_provisions_the_protected_operation_lock_directory(self):
         self.assertIn("'operation-locks'", self.acl_script)

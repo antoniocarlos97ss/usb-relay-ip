@@ -61,7 +61,7 @@ function Test-PathWithinRoot {
     $rootPath = Get-NormalizedPath -Path $Root
     return [System.StringComparer]::OrdinalIgnoreCase.Equals($candidatePath, $rootPath) -or
         $candidatePath.StartsWith(
-            ($rootPath + '\\'),
+            ($rootPath + [System.IO.Path]::DirectorySeparatorChar),
             [System.StringComparison]::OrdinalIgnoreCase
         )
 }
