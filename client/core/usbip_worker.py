@@ -75,8 +75,8 @@ class DetachWorker(QThread):
         port: int | None = None,
         expected_vid: str = "",
         expected_pid: str = "",
-        timeout: int | None = None,
         parent=None,
+        timeout: int | None = None,
     ):
         super().__init__(parent)
         self._busid = busid

@@ -89,6 +89,12 @@ class DetachWorkerTests(unittest.TestCase):
             expected_pid="abcd",
         )
 
+    def test_positional_parent_argument_remains_backward_compatible(self):
+        parent = object()
+        worker = DetachWorker("1-11", 7, "1234", "abcd", parent)
+
+        self.assertIs(parent, worker.parent)
+
     def test_shutdown_detach_forwards_a_bounded_command_timeout(self):
         worker = DetachWorker(
             "1-11",
