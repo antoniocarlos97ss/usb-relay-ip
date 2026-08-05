@@ -77,16 +77,24 @@ class WindowsInstallerSecurityContracts(unittest.TestCase):
         self.assertIn("MB_YESNO", uninstall)
         self.assertIn("IfSilent", uninstall)
         self.assertIn("-RemoveTarget", uninstall)
-        self.assertIn("$COMMONAPPDATA\\USBRelay", uninstall)
-        self.assertNotIn('RMDir /r "$COMMONAPPDATA\\USBRelay"', uninstall)
+        self.assertIn("$SharedStateRoot", uninstall)
+        self.assertNotIn("$COMMONAPPDATA", self.installer)
+        self.assertNotIn('RMDir /r "$SharedStateRoot"', uninstall)
 
     def test_install_abort_cleanup_is_scoped_and_reparse_safe(self):
         self.assertIn("Function .onInstFailed", self.installer)
-        self.assertIn("Function .onUserAbort", self.installer)
+        self.assertIn("!define MUI_CUSTOMFUNCTION_ABORT CleanupPartialInstall", self.installer)
+        self.assertNotIn("Function .onUserAbort", self.installer)
         self.assertIn("CleanupPartialInstall", self.installer)
         self.assertIn("$SharedStateCreated", self.installer)
         self.assertIn("-RemoveTarget", self.installer)
-        self.assertNotIn('RMDir /r "$COMMONAPPDATA\\USBRelay"', self.installer)
+        self.assertNotIn('RMDir /r "$SharedStateRoot"', self.installer)
+
+    def test_programdata_uses_supported_nsis_shell_context(self):
+        self.assertIn("Var SharedStateRoot", self.installer)
+        self.assertIn("SetShellVarContext all", self.installer)
+        self.assertIn('StrCpy $SharedStateRoot "$APPDATA\\USBRelay"', self.installer)
+        self.assertNotIn("$COMMONAPPDATA", self.installer)
 
 
 if __name__ == "__main__":

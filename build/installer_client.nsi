@@ -14,6 +14,7 @@ Unicode true
 Var SharedStatePreexisted
 Var SharedStateCreated
 Var CleanupAttempted
+Var SharedStateRoot
 
 Name "${PRODUCT_NAME} - Client"
 OutFile "..\dist\USBRelayClient_Setup.exe"
@@ -25,6 +26,7 @@ ShowUninstDetails show
 
 !include "MUI2.nsh"
 !define MUI_ABORTWARNING
+!define MUI_CUSTOMFUNCTION_ABORT CleanupPartialInstall
 !define MUI_ICON "..\client\assets\icon.ico"
 !define MUI_UNICON "..\client\assets\icon.ico"
 
@@ -40,6 +42,18 @@ ShowUninstDetails show
 
 !insertmacro MUI_LANGUAGE "PortugueseBR"
 !insertmacro MUI_LANGUAGE "English"
+
+Function .onInit
+    SetShellVarContext all
+    StrCpy $SharedStateRoot "$APPDATA\USBRelay"
+    SetShellVarContext current
+FunctionEnd
+
+Function un.onInit
+    SetShellVarContext all
+    StrCpy $SharedStateRoot "$APPDATA\USBRelay"
+    SetShellVarContext current
+FunctionEnd
 
 Section "USB Relay IP Client" SEC01
     SetShellVarContext current
@@ -63,18 +77,18 @@ Section "USB Relay IP Client" SEC01
     StrCpy $SharedStatePreexisted "0"
     StrCpy $SharedStateCreated "0"
     StrCpy $CleanupAttempted "0"
-    IfFileExists "$COMMONAPPDATA\USBRelay\." shared_state_exists shared_state_missing
+    IfFileExists "$SharedStateRoot\." shared_state_exists shared_state_missing
 shared_state_exists:
     StrCpy $SharedStatePreexisted "1"
     Goto shared_state_ready
 shared_state_missing:
-    CreateDirectory "$COMMONAPPDATA\USBRelay"
+    CreateDirectory "$SharedStateRoot"
     StrCpy $SharedStateCreated "1"
 shared_state_ready:
 
     ; set_shared_acl.ps1 protects the target and only then performs the optional
     ; exact-file legacy migration. It rejects reparse points before any walk.
-    ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\set_shared_acl.ps1" -TargetPath "$COMMONAPPDATA\USBRelay" -LegacyRoot "$APPDATA\USBRelay"' $0
+    ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\set_shared_acl.ps1" -TargetPath "$SharedStateRoot" -LegacyRoot "$APPDATA\USBRelay"' $0
     ${If} $0 != 0
         MessageBox MB_ICONSTOP|MB_OK "Falha ao proteger o estado compartilhado USBRelay (PowerShell exit $0). A instalação será interrompida com cleanup seguro."
         Abort
@@ -120,7 +134,7 @@ Function CleanupPartialInstall
     StrCpy $CleanupAttempted "1"
     ${If} $SharedStateCreated == "1"
         IfFileExists "$PLUGINSDIR\set_shared_acl.ps1" 0 cleanup_partial_done
-        ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\set_shared_acl.ps1" -TargetPath "$COMMONAPPDATA\USBRelay" -RemoveTarget' $0
+        ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\set_shared_acl.ps1" -TargetPath "$SharedStateRoot" -RemoveTarget' $0
         ${If} $0 != 0
             DetailPrint "Cleanup seguro do estado compartilhado não removeu a raiz (exit $0); nenhum caminho externo será tocado."
         ${EndIf}
@@ -129,10 +143,6 @@ cleanup_partial_done:
 FunctionEnd
 
 Function .onInstFailed
-    Call CleanupPartialInstall
-FunctionEnd
-
-Function .onUserAbort
     Call CleanupPartialInstall
 FunctionEnd
 
@@ -154,7 +164,7 @@ Section "Uninstall"
 remove_shared_state:
     InitPluginsDir
     File /oname=$PLUGINSDIR\set_shared_acl.ps1 "set_shared_acl.ps1"
-    ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\set_shared_acl.ps1" -TargetPath "$COMMONAPPDATA\USBRelay" -RemoveTarget' $1
+    ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\set_shared_acl.ps1" -TargetPath "$SharedStateRoot" -RemoveTarget' $1
     ${If} $1 != 0
         MessageBox MB_ICONEXCLAMATION|MB_OK "O estado compartilhado não foi removido (PowerShell exit $1); a chave de API foi preservada por segurança."
     ${EndIf}

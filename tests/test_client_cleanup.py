@@ -369,10 +369,11 @@ class ClientCleanupTests(unittest.TestCase):
         installer = (build_dir / "installer_client.nsi").read_text(encoding="utf-8")
         acl_script = (build_dir / "set_shared_acl.ps1").read_text(encoding="utf-8")
 
-        self.assertIn(r'CreateDirectory "$COMMONAPPDATA\USBRelay"', installer)
+        self.assertIn(r'CreateDirectory "$SharedStateRoot"', installer)
+        self.assertIn(r'StrCpy $SharedStateRoot "$APPDATA\USBRelay"', installer)
         self.assertIn(r'-LegacyRoot "$APPDATA\USBRelay"', installer)
         self.assertIn(
-            r'IfFileExists "$COMMONAPPDATA\USBRelay\." shared_state_exists shared_state_missing',
+            r'IfFileExists "$SharedStateRoot\." shared_state_exists shared_state_missing',
             installer,
         )
         self.assertIn("set_shared_acl.ps1", installer)
