@@ -65,6 +65,7 @@ _SESSION_FILE = "pnp_sessions.json"
 _QUERY_LOCK = threading.Lock()
 _QUERY_PROCESSES: set[subprocess.Popen] = set()
 _QUERY_OWNERS: dict[subprocess.Popen, int] = {}
+QUERY_KILL_TIMEOUT_SECONDS = 2
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -568,7 +569,11 @@ def list_usb_devices(timeout: int = 5, include_properties: bool = True) -> list[
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=QUERY_KILL_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                logger.warning("PnP query did not exit after kill")
+                return None
             logger.warning("PnP query timed out")
             return None
         finally:

@@ -383,6 +383,91 @@ class PnpRecoveryTests(unittest.TestCase):
         self.assertFalse(thread_factory.call_args.kwargs["daemon"])
         worker.start.assert_called_once_with()
 
+    def test_concurrent_stop_waits_for_worker_start_and_never_joins_unstarted_thread(self):
+        from client.core.usbip_wrapper import AttachedDevicesQuery
+
+        real_thread = threading.Thread
+        start_entered = threading.Event()
+        allow_start = threading.Event()
+        check_done = threading.Event()
+        stop_done = threading.Event()
+        errors = []
+        worker_holder = {}
+
+        class GatedThread(real_thread):
+            def start(self):
+                start_entered.set()
+                if not allow_start.wait(2):
+                    raise AssertionError("test did not release the worker start gate")
+                return super().start()
+
+        def thread_factory(*args, **kwargs):
+            worker = GatedThread(*args, **kwargs)
+            worker_holder["worker"] = worker
+            return worker
+
+        broken = PnpDeviceStatus(
+            instance_id=r"USB\VID_1234&PID_ABCD\TOKEN",
+            name="Token",
+            problem_code=43,
+            status="Error",
+            vid="1234",
+            pid="abcd",
+        )
+        monitor = PnpRecoveryMonitor(Mock(host_ip="10.0.0.1", host_port=5757, api_key=""))
+        monitor._running = True
+        monitor.update_devices([self.device])
+        monitor._fail_samples[self.device.busid] = 1
+
+        def run_check():
+            try:
+                monitor._check_once()
+            except BaseException as exc:  # capture the concurrent worker failure for assertion
+                errors.append(("check", exc))
+            finally:
+                check_done.set()
+
+        def run_stop():
+            try:
+                monitor.stop()
+            except BaseException as exc:  # current code raises RuntimeError from join()
+                errors.append(("stop", exc))
+            finally:
+                stop_done.set()
+
+        with (
+            patch("client.core.pnp_recovery.threading.Thread", side_effect=thread_factory),
+            patch("client.core.pnp_recovery.recover_device", return_value=(False, "stopped")),
+            patch("client.core.pnp_recovery.windows_pnp.find_unknown_code43", return_value=[]),
+            patch("client.core.pnp_recovery.windows_pnp.find_session_code43", return_value=[broken]),
+            patch("client.core.pnp_recovery.windows_pnp.list_usb_devices", return_value=[broken]),
+            patch(
+                "client.core.pnp_recovery.usbip_wrapper.query_attached_devices",
+                return_value=AttachedDevicesQuery(
+                    True,
+                    (AttachedDevice(port=3, busid="1-2", vid="1234", pid="abcd"),),
+                ),
+            ),
+            patch("client.core.pnp_recovery.windows_pnp.kill_all_queries"),
+            patch("client.core.pnp_recovery.usbip_wrapper.kill_all_subprocesses"),
+        ):
+            check_thread = real_thread(target=run_check)
+            check_thread.start()
+            self.assertTrue(start_entered.wait(2))
+
+            stop_thread = real_thread(target=run_stop)
+            stop_thread.start()
+            allow_start.set()
+
+            self.assertTrue(check_done.wait(2))
+            self.assertTrue(stop_done.wait(2))
+            check_thread.join(1)
+            stop_thread.join(1)
+
+        self.assertEqual([], errors)
+        self.assertFalse(monitor._recovery_threads)
+        self.assertFalse(worker_holder["worker"].is_alive())
+
     @patch("client.core.pnp_recovery.time.sleep")
     @patch(
         "client.core.pnp_recovery.time.monotonic",
@@ -604,6 +689,8 @@ class PnpRecoveryTests(unittest.TestCase):
         monitor._running = True
         monitor._devices = [self.device]
         monitor.recovery_succeeded = Mock()
+        recovery_emitted = threading.Event()
+        monitor.recovery_succeeded.emit.side_effect = lambda *_args: recovery_emitted.set()
 
         monitor._check_once()
 
@@ -612,6 +699,7 @@ class PnpRecoveryTests(unittest.TestCase):
         recover.side_effect = lambda *args, **kwargs: (completed.set() or True, "ok")
         monitor._check_once()
         self.assertTrue(completed.wait(1))
+        self.assertTrue(recovery_emitted.wait(1))
         recover.assert_called_once()
         monitor.recovery_succeeded.emit.assert_called_once_with("1-2", "ok")
 

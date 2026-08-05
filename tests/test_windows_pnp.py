@@ -1,6 +1,7 @@
 import json
 import multiprocessing
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -18,6 +19,7 @@ from client.core.windows_pnp import (
     find_unknown_code43,
     get_busid_for_instance_id,
     get_correlated_statuses,
+    list_usb_devices,
     register_attached_session,
 )
 
@@ -59,6 +61,71 @@ class WindowsPnpTests(unittest.TestCase):
     def tearDown(self):
         self._path_patcher.stop()
         self._tempdir.cleanup()
+
+    def test_query_timeout_uses_bounded_wait_after_kill(self):
+        class FakeProcess:
+            returncode = -9
+
+            def __init__(self):
+                self.communicate_timeouts = []
+                self.killed = False
+
+            def communicate(self, timeout=None):
+                self.communicate_timeouts.append(timeout)
+                if len(self.communicate_timeouts) == 1:
+                    raise subprocess.TimeoutExpired("powershell.exe", timeout)
+                return "", ""
+
+            def kill(self):
+                self.killed = True
+
+        process = FakeProcess()
+        with (
+            unittest.mock.patch("client.core.windows_pnp.sys.platform", "win32"),
+            unittest.mock.patch("client.core.windows_pnp.subprocess.Popen", return_value=process),
+            unittest.mock.patch.object(
+                subprocess,
+                "CREATE_NO_WINDOW",
+                0,
+                create=True,
+            ),
+        ):
+            self.assertIsNone(list_usb_devices(timeout=1, include_properties=False))
+
+        self.assertTrue(process.killed)
+        self.assertEqual([1, 2], process.communicate_timeouts)
+
+    def test_query_timeout_after_kill_fails_closed_if_process_stays_alive(self):
+        class HangingProcess:
+            returncode = None
+
+            def __init__(self):
+                self.communicate_timeouts = []
+                self.killed = False
+
+            def communicate(self, timeout=None):
+                self.communicate_timeouts.append(timeout)
+                raise subprocess.TimeoutExpired("powershell.exe", timeout)
+
+            def kill(self):
+                self.killed = True
+
+        process = HangingProcess()
+        with (
+            unittest.mock.patch("client.core.windows_pnp.sys.platform", "win32"),
+            unittest.mock.patch("client.core.windows_pnp.subprocess.Popen", return_value=process),
+            unittest.mock.patch.object(
+                subprocess,
+                "CREATE_NO_WINDOW",
+                0,
+                create=True,
+            ),
+        ):
+            result = list_usb_devices(timeout=1, include_properties=False)
+
+        self.assertIsNone(result)
+        self.assertTrue(process.killed)
+        self.assertEqual([1, 2], process.communicate_timeouts)
 
     def test_parses_code43_and_vid_pid(self):
         payload = json.dumps([{

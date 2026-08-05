@@ -481,7 +481,7 @@ class _PnpRecoveryState:
                     daemon=False,
                 )
                 self._recovery_threads[device.busid] = worker
-            worker.start()
+                worker.start()
 
         unknown = windows_pnp.find_unknown_code43(statuses)
         reportable = [
@@ -533,9 +533,9 @@ class _PnpRecoveryState:
                     logger.debug("Recovery failure notification discarded during shutdown")
 
     def _stop_workers(self):
-        self._running = False
-        self._stop_event.set()
         with self._recovery_lock:
+            self._running = False
+            self._stop_event.set()
             workers = list(self._recovery_threads.values())
         poll_owner_ids = {self._run_thread_id} if self._run_thread_id is not None else set()
         windows_pnp.kill_all_queries(poll_owner_ids)
