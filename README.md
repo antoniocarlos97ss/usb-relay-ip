@@ -74,6 +74,10 @@ bash build/build_installers.sh
 
 O script baixa automaticamente os binários dependentes em `usbipd-install/`, compila os dois componentes e gera os instaladores em `dist/`.
 
+### Validação Windows automatizada
+
+O repositório executa testes em Windows Server 2022/2025, integração NTFS/SYSTEM/PnP e compilação NSIS pelo GitHub Actions. A execução física permanece separada e manual. Consulte [Validação Windows e piloto USB/IP](docs/windows-testing.md) para cobertura, configuração segura do runner self-hosted e roteiro do piloto.
+
 ## Guia Rápido
 
 ### 1. Instalar e Configurar o Host
