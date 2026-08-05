@@ -16,6 +16,7 @@ CONFIRM_SAMPLES = 2
 RECOVERY_DEADLINE_SECONDS = 90
 WAIT_SHARED_SECONDS = 6
 WAIT_UNBOUND_SECONDS = 6
+ROLLBACK_SHARED_SECONDS = 6
 VALIDATE_SECONDS = 15
 SUCCESS_COOLDOWN_SECONDS = 60
 FAILURE_COOLDOWN_SECONDS = 15 * 60
@@ -119,6 +120,63 @@ def _wait_host_unbound(
     return False
 
 
+def _compensate_host_rebind(
+    api_client: HostApiClient,
+    busid: str,
+    expected_vid: str,
+    expected_pid: str,
+    wait_shared=None,
+) -> tuple[bool, str]:
+    """Restore a verified Shared host state after an unbind-side failure.
+
+    This deliberately does not receive the operation cancellation event: once
+    unbind has succeeded, cancellation is no longer allowed to abandon the
+    host in Not shared. The compensation has its own short deadline.
+    """
+    try:
+        rebound = api_client.bind_device(busid)
+    except Exception as exc:
+        logger.exception("Compensatory host bind crashed for %s", busid)
+        return False, f"compensatory host bind raised: {exc}"
+    if not rebound:
+        return False, "compensatory host bind failed"
+
+    if wait_shared is None:
+        wait_shared = _wait_host_shared
+    shared_deadline = time.monotonic() + ROLLBACK_SHARED_SECONDS
+    try:
+        shared = wait_shared(
+            api_client,
+            busid,
+            shared_deadline,
+            None,
+            expected_vid=expected_vid,
+            expected_pid=expected_pid,
+        )
+    except Exception as exc:
+        logger.exception("Compensatory host Shared poll crashed for %s", busid)
+        return False, f"compensatory Shared poll raised: {exc}"
+    if not shared:
+        return False, "compensatory host rebind did not reach verified Shared state"
+    return True, ""
+
+
+def _failed_host_cycle_after_unbind(
+    api_client: HostApiClient,
+    device: UsbDevice,
+    reason: str,
+) -> tuple[bool, str]:
+    compensated, compensation_reason = _compensate_host_rebind(
+        api_client,
+        device.busid,
+        device.vid,
+        device.pid,
+    )
+    if not compensated:
+        reason = f"{reason}; {compensation_reason}"
+    return False, reason
+
+
 def _wait_pnp_healthy(
     device: UsbDevice,
     deadline: float,
@@ -215,37 +273,83 @@ def recover_device(
                 return False, "recovery interrupted during shutdown"
             if not _host_identity_is_current(api_client, device):
                 return False, "host identity changed before recovery unbind"
-            if not api_client.unbind_device(device.busid):
+            try:
+                unbound = api_client.unbind_device(device.busid)
+            except Exception as exc:
+                logger.exception("Host unbind crashed during recovery for %s", device.busid)
+                return False, f"host unbind raised during recovery: {exc}"
+            if not unbound:
                 return False, "host unbind failed during recovery"
-            unbound_deadline = min(deadline, time.monotonic() + WAIT_UNBOUND_SECONDS)
-            if not _wait_host_unbound(
-                api_client,
-                device.busid,
-                unbound_deadline,
-                cancel_event,
-                expected_vid=device.vid,
-                expected_pid=device.pid,
-            ):
-                if cancel_event and cancel_event.is_set():
-                    return False, "recovery interrupted during shutdown"
-                return False, "host did not report the expected device as Not shared after unbind"
-            if cancel_event and cancel_event.is_set():
-                return False, "recovery interrupted during shutdown"
-            if not api_client.bind_device(device.busid):
-                return False, "host bind failed during recovery"
 
-            shared_deadline = min(deadline, time.monotonic() + WAIT_SHARED_SECONDS)
-            if not _wait_host_shared(
-                api_client,
-                device.busid,
-                shared_deadline,
-                cancel_event,
-                expected_vid=device.vid,
-                expected_pid=device.pid,
-            ):
-                if cancel_event and cancel_event.is_set():
-                    return False, "recovery interrupted during shutdown"
-                return False, "host did not report the expected device as Shared after bind"
+            try:
+                unbound_ok = _wait_host_unbound(
+                    api_client,
+                    device.busid,
+                    min(deadline, time.monotonic() + WAIT_UNBOUND_SECONDS),
+                    cancel_event,
+                    expected_vid=device.vid,
+                    expected_pid=device.pid,
+                )
+            except Exception as exc:
+                logger.exception("Host Not shared poll crashed during recovery for %s", device.busid)
+                return _failed_host_cycle_after_unbind(
+                    api_client,
+                    device,
+                    f"host Not shared poll raised during recovery: {exc}",
+                )
+            if not unbound_ok:
+                reason = (
+                    "recovery interrupted during shutdown"
+                    if cancel_event and cancel_event.is_set()
+                    else "host did not report the expected device as Not shared after unbind"
+                )
+                return _failed_host_cycle_after_unbind(api_client, device, reason)
+
+            if cancel_event and cancel_event.is_set():
+                return _failed_host_cycle_after_unbind(
+                    api_client,
+                    device,
+                    "recovery interrupted during shutdown",
+                )
+            try:
+                bound = api_client.bind_device(device.busid)
+            except Exception as exc:
+                logger.exception("Host bind crashed during recovery for %s", device.busid)
+                return _failed_host_cycle_after_unbind(
+                    api_client,
+                    device,
+                    f"host bind raised during recovery: {exc}",
+                )
+            if not bound:
+                return _failed_host_cycle_after_unbind(
+                    api_client,
+                    device,
+                    "host bind failed during recovery",
+                )
+
+            try:
+                shared = _wait_host_shared(
+                    api_client,
+                    device.busid,
+                    min(deadline, time.monotonic() + WAIT_SHARED_SECONDS),
+                    cancel_event,
+                    expected_vid=device.vid,
+                    expected_pid=device.pid,
+                )
+            except Exception as exc:
+                logger.exception("Host Shared poll crashed during recovery for %s", device.busid)
+                return _failed_host_cycle_after_unbind(
+                    api_client,
+                    device,
+                    f"host Shared poll raised during recovery: {exc}",
+                )
+            if not shared:
+                reason = (
+                    "recovery interrupted during shutdown"
+                    if cancel_event and cancel_event.is_set()
+                    else "host did not report the expected device as Shared after bind"
+                )
+                return _failed_host_cycle_after_unbind(api_client, device, reason)
 
             remaining = int(deadline - time.monotonic())
             if remaining < 5:
@@ -283,12 +387,8 @@ def recover_device(
         operation_coordinator.release(device.vid, device.pid, device.busid)
 
 
-class PnpRecoveryMonitor(QThread):
-    recovery_failed = pyqtSignal(str, str)
-    recovery_succeeded = pyqtSignal(str, str)
-
+class _PnpRecoveryState:
     def __init__(self, api_client: HostApiClient, parent=None, poll_seconds: int = POLL_SECONDS):
-        super().__init__(parent)
         self._api_client = HostApiClient(
             host_ip=api_client.host_ip,
             host_port=api_client.host_port,
@@ -313,22 +413,29 @@ class PnpRecoveryMonitor(QThread):
     def update_host_config(self, host_ip: str, host_port: int, api_key: str):
         self._api_client.update_config(host_ip, host_port, api_key)
 
-    def start(self, *args, **kwargs):
+    def _prepare_run(self):
         self._stop_event.clear()
         self._running = True
-        return super().start(*args, **kwargs)
 
-    def run(self):
+    def poll_cycle(self):
+        """Run one best-effort poll without allowing an exception to kill the owner."""
+        if self._stop_event.is_set() or not self._running:
+            return
+        try:
+            self._check_once()
+        except Exception:
+            logger.exception("PnP recovery poll failed; continuing next cycle")
+
+    def _run_loop(self):
         if self._stop_event.is_set() or not self._running:
             return
         self._run_thread_id = threading.get_ident()
         try:
             while self._running and not self._stop_event.is_set():
-                self._check_once()
+                self.poll_cycle()
                 for _ in range(self._poll_seconds * 10):
-                    if not self._running or self._stop_event.is_set():
+                    if not self._running or self._stop_event.wait(0.1):
                         return
-                    time.sleep(0.1)
         finally:
             self._run_thread_id = None
 
@@ -422,34 +529,85 @@ class PnpRecoveryMonitor(QThread):
             self._cooldown_until[key] = time.monotonic() + SUCCESS_COOLDOWN_SECONDS
             if not self._stop_event.is_set() and self._running:
                 try:
-                    self.recovery_succeeded.emit(device.busid, message)
+                    self._emit_recovery("recovery_succeeded", device.busid, message)
                 except RuntimeError:
-                    logger.debug("Recovery success signal discarded during shutdown")
+                    logger.debug("Recovery success notification discarded during shutdown")
         elif message == "another reconnect operation is already running":
             self._fail_samples[key] = CONFIRM_SAMPLES - 1
         else:
             self._cooldown_until[key] = time.monotonic() + FAILURE_COOLDOWN_SECONDS
             if not self._stop_event.is_set() and self._running:
                 try:
-                    self.recovery_failed.emit(device.busid, message)
+                    self._emit_recovery("recovery_failed", device.busid, message)
                 except RuntimeError:
-                    logger.debug("Recovery failure signal discarded during shutdown")
+                    logger.debug("Recovery failure notification discarded during shutdown")
 
-    def stop(self):
+    def _stop_workers(self):
         self._running = False
         self._stop_event.set()
         with self._recovery_lock:
             workers = list(self._recovery_threads.values())
-        owner_thread_ids = {
-            thread_id for thread_id in (
-                self._run_thread_id,
-                *(worker.ident for worker in workers),
-            )
-            if thread_id is not None
-        }
-        windows_pnp.kill_all_queries(owner_thread_ids)
-        usbip_wrapper.kill_all_subprocesses(owner_thread_ids)
-        self.wait(2000)
+        poll_owner_ids = {self._run_thread_id} if self._run_thread_id is not None else set()
+        windows_pnp.kill_all_queries(poll_owner_ids)
+        # Recovery workers may be in the middle of the transactional detach ->
+        # host cycle.  Do not kill their USB/IP child process: cancellation is
+        # a barrier for new mutations, and the worker must finish compensation
+        # before its operation lock is released.
+        if poll_owner_ids:
+            usbip_wrapper.kill_all_subprocesses(poll_owner_ids)
         join_deadline = time.monotonic() + 2.0
         for worker in workers:
             worker.join(timeout=max(0, join_deadline - time.monotonic()))
+
+    def _emit_recovery(self, signal_name: str, *args):
+        callback = getattr(self, f"_{signal_name}_callback", None)
+        if callback is not None:
+            callback(*args)
+        signal = getattr(self, signal_name, None)
+        if signal is not None:
+            signal.emit(*args)
+
+
+class PnpRecoveryCore(_PnpRecoveryState):
+    """Plain Python recovery poller for headless/Session 0 execution.
+
+    This class intentionally has no Qt owner and never starts a QThread.  The
+    caller drives ``poll_cycle`` from its own retry loop.
+    """
+
+    def __init__(
+        self,
+        api_client: HostApiClient,
+        poll_seconds: int = POLL_SECONDS,
+        on_recovery_failed=None,
+        on_recovery_succeeded=None,
+    ):
+        super().__init__(api_client, parent=None, poll_seconds=poll_seconds)
+        self._recovery_failed_callback = on_recovery_failed
+        self._recovery_succeeded_callback = on_recovery_succeeded
+
+    def start(self):
+        self._prepare_run()
+
+    def stop(self):
+        self._stop_workers()
+
+
+class PnpRecoveryMonitor(QThread, _PnpRecoveryState):
+    recovery_failed = pyqtSignal(str, str)
+    recovery_succeeded = pyqtSignal(str, str)
+
+    def __init__(self, api_client: HostApiClient, parent=None, poll_seconds: int = POLL_SECONDS):
+        QThread.__init__(self, parent)
+        _PnpRecoveryState.__init__(self, api_client, parent=None, poll_seconds=poll_seconds)
+
+    def start(self, *args, **kwargs):
+        self._prepare_run()
+        return QThread.start(self, *args, **kwargs)
+
+    def run(self):
+        self._run_loop()
+
+    def stop(self):
+        self._stop_workers()
+        self.wait(2000)

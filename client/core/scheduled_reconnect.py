@@ -7,13 +7,17 @@ from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
 from client.api.host_client import HostApiClient
 from client.core import config_manager, operation_coordinator, usbip_wrapper
-from client.core.pnp_recovery import _wait_pnp_healthy
+from client.core.pnp_recovery import _compensate_host_rebind, _wait_pnp_healthy
 from shared.models import UsbDevice
 
 logger = logging.getLogger(__name__)
 
 FAILURE_COOLDOWN = timedelta(minutes=15)
 HOST_TRANSITION_TIMEOUT_SECONDS = 10
+
+
+class HostUnreachableError(RuntimeError):
+    """The host API did not provide authoritative device state."""
 
 
 def _utc_now() -> datetime:
@@ -38,6 +42,23 @@ def _parse_timestamp(value: str) -> datetime | None:
 
 def _format_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _get_host_devices(api_client: HostApiClient, timeout: float | None = None) -> list[UsbDevice]:
+    try:
+        if timeout is None:
+            devices = api_client.get_devices()
+        else:
+            devices = api_client.get_devices(timeout=timeout)
+    except Exception as exc:
+        raise HostUnreachableError(f"Host unreachable while reading device state: {exc}") from exc
+    try:
+        connected = api_client.is_connected()
+    except Exception:
+        connected = True
+    if connected is False:
+        raise HostUnreachableError("Host unreachable while reading device state")
+    return list(devices)
 
 
 def find_unique_identity_match(
@@ -73,7 +94,10 @@ def _wait_host_state(
         remaining = deadline - time.monotonic()
         matches = [
             item
-            for item in api_client.get_devices(timeout=min(2.0, max(0.2, remaining)))
+            for item in _get_host_devices(
+                api_client,
+                timeout=min(2.0, max(0.2, remaining)),
+            )
             if item.busid == busid
         ]
         if len(matches) > 1:
@@ -93,20 +117,71 @@ def _wait_host_state(
     return False
 
 
+def _host_busid_identity_status(
+    api_client: HostApiClient,
+    expected: UsbDevice,
+) -> tuple[bool, str]:
+    try:
+        current = [
+            item
+            for item in _get_host_devices(api_client, timeout=2)
+            if item.busid == expected.busid
+        ]
+    except HostUnreachableError as exc:
+        return False, str(exc)
+    if len(current) != 1:
+        if len(current) > 1:
+            return False, f"Host identity is ambiguous at busid {expected.busid}"
+        return False, f"Device identity changed or disappeared at busid {expected.busid}"
+    if _normalize_key(current[0].vid, current[0].pid) != _normalize_key(
+        expected.vid,
+        expected.pid,
+    ):
+        return False, f"Device identity changed at busid {expected.busid}"
+    return True, ""
+
+
 def _host_busid_identity_is_current(
     api_client: HostApiClient,
     expected: UsbDevice,
 ) -> bool:
-    current = [
-        item
-        for item in api_client.get_devices(timeout=2)
-        if item.busid == expected.busid
-    ]
-    return (
-        len(current) == 1
-        and _normalize_key(current[0].vid, current[0].pid)
-        == _normalize_key(expected.vid, expected.pid)
+    return _host_busid_identity_status(api_client, expected)[0]
+
+
+def _wait_shared_for_rollback(
+    api_client: HostApiClient,
+    busid: str,
+    deadline: float,
+    _cancel_event=None,
+    expected_vid: str = "",
+    expected_pid: str = "",
+) -> bool:
+    return _wait_host_state(
+        api_client,
+        busid,
+        "Shared",
+        timeout=max(0.0, deadline - time.monotonic()),
+        cancel_event=None,
+        expected_vid=expected_vid,
+        expected_pid=expected_pid,
     )
+
+
+def _failed_reconnect_after_unbind(
+    api_client: HostApiClient,
+    device: UsbDevice,
+    reason: str,
+) -> tuple[bool, str]:
+    compensated, compensation_reason = _compensate_host_rebind(
+        api_client,
+        device.busid,
+        device.vid,
+        device.pid,
+        wait_shared=_wait_shared_for_rollback,
+    )
+    if not compensated:
+        reason = f"{reason}; {compensation_reason}"
+    return False, reason
 
 
 def _run_reconnect_cycle_unlocked(
@@ -114,10 +189,14 @@ def _run_reconnect_cycle_unlocked(
     device: UsbDevice,
     cancel_event: threading.Event | None = None,
     record_completion: bool = True,
+    identity_confirmed: bool = False,
 ) -> tuple[bool, str]:
     if cancel_event and cancel_event.is_set():
         return False, "reconnect interrupted during shutdown"
-    host_devices = api_client.get_devices()
+    try:
+        host_devices = _get_host_devices(api_client)
+    except HostUnreachableError as exc:
+        return False, str(exc)
     busid_matches = [item for item in host_devices if item.busid == device.busid]
     if len(busid_matches) > 1:
         return False, f"Multiple host devices claim busid {device.busid}"
@@ -139,8 +218,13 @@ def _run_reconnect_cycle_unlocked(
         if len(local_matches) > 1:
             return False, f"Multiple local ports claim busid {matched.busid}"
         if not local_matches:
+            if not identity_confirmed:
+                return False, (
+                    f"Host reports {matched.busid} Attached but no local session identity "
+                    "is proven; refusing scheduled host reset"
+                )
             logger.warning(
-                "No local session exists for %s; continuing with safe host cycle",
+                "No local session exists for %s; continuing with explicitly confirmed host cycle",
                 matched.busid,
             )
         else:
@@ -157,39 +241,86 @@ def _run_reconnect_cycle_unlocked(
 
     if cancel_event and cancel_event.is_set():
         return False, "reconnect interrupted during shutdown"
-    if not _host_busid_identity_is_current(api_client, matched):
-        return False, f"Device identity changed at busid {matched.busid} before unbind"
-    if not api_client.unbind_device(matched.busid):
+    identity_ok, identity_reason = _host_busid_identity_status(api_client, matched)
+    if not identity_ok:
+        return False, f"{identity_reason} before unbind"
+    try:
+        unbound = api_client.unbind_device(matched.busid)
+    except Exception as exc:
+        logger.exception("Host unbind crashed during scheduled reconnect for %s", matched.busid)
+        return False, f"Failed to unbind {matched.busid} on host: {exc}"
+    if not unbound:
         return False, f"Failed to unbind {matched.busid} on host"
 
-    if not _wait_host_state(
-        api_client,
-        matched.busid,
-        "Not shared",
-        cancel_event=cancel_event,
-        expected_vid=matched.vid,
-        expected_pid=matched.pid,
-    ):
-        if cancel_event and cancel_event.is_set():
-            return False, "reconnect interrupted during shutdown"
-        return False, f"Host did not report {matched.busid} as Not shared after unbind"
+    try:
+        unbound_ok = _wait_host_state(
+            api_client,
+            matched.busid,
+            "Not shared",
+            cancel_event=cancel_event,
+            expected_vid=matched.vid,
+            expected_pid=matched.pid,
+        )
+    except Exception as exc:
+        logger.exception("Host Not shared poll crashed during scheduled reconnect for %s", matched.busid)
+        return _failed_reconnect_after_unbind(
+            api_client,
+            matched,
+            f"Host Not shared poll failed for {matched.busid}: {exc}",
+        )
+    if not unbound_ok:
+        reason = (
+            "reconnect interrupted during shutdown"
+            if cancel_event and cancel_event.is_set()
+            else f"Host did not report {matched.busid} as Not shared after unbind"
+        )
+        return _failed_reconnect_after_unbind(api_client, matched, reason)
 
     if cancel_event and cancel_event.is_set():
-        return False, "reconnect interrupted during shutdown"
-    if not api_client.bind_device(matched.busid):
-        return False, f"Failed to bind {matched.busid} on host"
+        return _failed_reconnect_after_unbind(
+            api_client,
+            matched,
+            "reconnect interrupted during shutdown",
+        )
+    try:
+        bound = api_client.bind_device(matched.busid)
+    except Exception as exc:
+        logger.exception("Host bind crashed during scheduled reconnect for %s", matched.busid)
+        return _failed_reconnect_after_unbind(
+            api_client,
+            matched,
+            f"Failed to bind {matched.busid} on host: {exc}",
+        )
+    if not bound:
+        return _failed_reconnect_after_unbind(
+            api_client,
+            matched,
+            f"Failed to bind {matched.busid} on host",
+        )
 
-    if not _wait_host_state(
-        api_client,
-        matched.busid,
-        "Shared",
-        cancel_event=cancel_event,
-        expected_vid=matched.vid,
-        expected_pid=matched.pid,
-    ):
-        if cancel_event and cancel_event.is_set():
-            return False, "reconnect interrupted during shutdown"
-        return False, f"Host did not report {matched.busid} as Shared after bind"
+    try:
+        shared = _wait_host_state(
+            api_client,
+            matched.busid,
+            "Shared",
+            cancel_event=cancel_event,
+            expected_vid=matched.vid,
+            expected_pid=matched.pid,
+        )
+    except Exception as exc:
+        logger.exception("Host Shared poll crashed during scheduled reconnect for %s", matched.busid)
+        return _failed_reconnect_after_unbind(
+            api_client,
+            matched,
+            f"Host Shared poll failed for {matched.busid}: {exc}",
+        )
+    if not shared:
+        reason = (
+            "reconnect interrupted during shutdown"
+            if cancel_event and cancel_event.is_set()
+            else f"Host did not report {matched.busid} as Shared after bind"
+        )
+        return _failed_reconnect_after_unbind(api_client, matched, reason)
 
     if cancel_event and cancel_event.is_set():
         return False, "reconnect interrupted during shutdown"
@@ -218,6 +349,7 @@ def _run_reconnect_cycle(
     device: UsbDevice,
     cancel_event: threading.Event | None = None,
     record_completion: bool = True,
+    identity_confirmed: bool = False,
 ) -> tuple[bool, str]:
     if not operation_coordinator.try_acquire(device.vid, device.pid, device.busid):
         return False, "another reconnect operation is already running"
@@ -227,6 +359,7 @@ def _run_reconnect_cycle(
             device,
             cancel_event,
             record_completion,
+            identity_confirmed,
         )
     finally:
         operation_coordinator.release(device.vid, device.pid, device.busid)
@@ -424,6 +557,11 @@ class ScheduledReconnectController(QObject):
 
         if message == "another reconnect operation is already running":
             logger.info("Scheduled reconnect deferred for %s: %s", busid, message)
+            return
+
+        if usbip_wrapper.is_transport_lock_contention(message):
+            logger.info("Scheduled reconnect deferred for %s due to transport lock contention", busid)
+            self._failed_until.pop(key, None)
             return
 
         self._failed_until[key] = self._now_provider() + FAILURE_COOLDOWN

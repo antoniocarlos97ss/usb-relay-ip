@@ -120,6 +120,85 @@ class PnpRecoveryTests(unittest.TestCase):
         self.assertIn("interrupted", message)
         attach.assert_not_called()
 
+    @patch("client.core.pnp_recovery._wait_host_shared", return_value=True)
+    @patch("client.core.pnp_recovery._wait_host_unbound")
+    @patch("client.core.pnp_recovery._matching_attached", return_value=None)
+    def test_cancel_after_unbind_rebinds_host_before_return(
+        self, matching, wait_unbound, wait_shared
+    ):
+        cancelled = threading.Event()
+        wait_unbound.side_effect = lambda *args, **kwargs: (cancelled.set() or False)
+        api = Mock(host_ip="10.0.0.1")
+        api.get_devices.return_value = [self.device]
+        api.unbind_device.return_value = True
+        api.bind_device.return_value = True
+
+        success, message = recover_device(
+            api,
+            self.device,
+            cancel_event=cancelled,
+            identity_confirmed=True,
+        )
+
+        self.assertFalse(success)
+        self.assertIn("interrupted", message)
+        api.bind_device.assert_called_once_with("1-2")
+        self.assertGreaterEqual(wait_shared.call_count, 1)
+
+    @patch("client.core.pnp_recovery._wait_host_shared", return_value=True)
+    @patch("client.core.pnp_recovery._wait_host_unbound", return_value=False)
+    @patch("client.core.pnp_recovery._matching_attached", return_value=None)
+    def test_unbound_timeout_rebinds_host_before_return(
+        self, matching, wait_unbound, wait_shared
+    ):
+        api = Mock(host_ip="10.0.0.1")
+        api.get_devices.return_value = [self.device]
+        api.unbind_device.return_value = True
+        api.bind_device.return_value = True
+
+        success, message = recover_device(api, self.device, identity_confirmed=True)
+
+        self.assertFalse(success)
+        self.assertIn("Not shared", message)
+        api.bind_device.assert_called_once_with("1-2")
+        self.assertGreaterEqual(wait_shared.call_count, 1)
+
+    @patch("client.core.pnp_recovery._wait_host_shared", return_value=True)
+    @patch("client.core.pnp_recovery._wait_host_unbound", return_value=True)
+    @patch("client.core.pnp_recovery._matching_attached", return_value=None)
+    def test_bind_failure_attempts_bounded_compensatory_rebind(
+        self, matching, wait_unbound, wait_shared
+    ):
+        api = Mock(host_ip="10.0.0.1")
+        api.get_devices.return_value = [self.device]
+        api.unbind_device.return_value = True
+        api.bind_device.side_effect = [False, True]
+
+        success, message = recover_device(api, self.device, identity_confirmed=True)
+
+        self.assertFalse(success)
+        self.assertIn("bind", message.lower())
+        self.assertEqual([call("1-2"), call("1-2")], api.bind_device.call_args_list)
+        self.assertGreaterEqual(wait_shared.call_count, 1)
+
+    @patch("client.core.pnp_recovery._wait_host_shared", side_effect=[False, True])
+    @patch("client.core.pnp_recovery._wait_host_unbound", return_value=True)
+    @patch("client.core.pnp_recovery._matching_attached", return_value=None)
+    def test_shared_timeout_attempts_bounded_compensatory_rebind(
+        self, matching, wait_unbound, wait_shared
+    ):
+        api = Mock(host_ip="10.0.0.1")
+        api.get_devices.return_value = [self.device]
+        api.unbind_device.return_value = True
+        api.bind_device.return_value = True
+
+        success, message = recover_device(api, self.device, identity_confirmed=True)
+
+        self.assertFalse(success)
+        self.assertIn("Shared", message)
+        self.assertEqual([call("1-2"), call("1-2")], api.bind_device.call_args_list)
+        self.assertEqual(2, wait_shared.call_count)
+
     @patch("client.core.pnp_recovery._matching_attached", return_value=None)
     def test_ambiguous_session_is_not_recovered(self, matching):
         success, message = recover_device(Mock(), self.device)
@@ -490,7 +569,7 @@ class PnpRecoveryTests(unittest.TestCase):
 
         self.assertLess(time.monotonic() - started, 5)
         kill_queries.assert_called_once_with(set())
-        kill_usbip.assert_called_once_with(set())
+        kill_usbip.assert_not_called()
 
     def test_monitor_run_does_not_clear_a_prior_stop_request(self):
         monitor = PnpRecoveryMonitor(Mock(host_ip="10.0.0.1", host_port=5757, api_key=""))
@@ -501,6 +580,23 @@ class PnpRecoveryTests(unittest.TestCase):
         monitor.run()
 
         monitor._check_once.assert_not_called()
+
+    @patch("client.core.pnp_recovery.time.sleep")
+    def test_monitor_continues_after_poll_exception(self, sleep):
+        monitor = PnpRecoveryMonitor(Mock(host_ip="10.0.0.1", host_port=5757, api_key=""))
+        monitor._running = True
+        calls = []
+
+        def check_once():
+            calls.append("poll")
+            if len(calls) == 1:
+                raise OSError("ProgramData lock unavailable")
+            monitor._stop_event.set()
+
+        monitor._check_once = check_once
+        monitor.run()
+
+        self.assertEqual(["poll", "poll"], calls)
 
     @patch("client.core.pnp_recovery.recover_device", side_effect=RuntimeError("boom"))
     def test_recovery_exception_clears_active_worker(self, recover):

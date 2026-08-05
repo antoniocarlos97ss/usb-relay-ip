@@ -20,6 +20,18 @@ _subprocess_lock = threading.RLock()
 PNP_CORRELATION_TIMEOUT_SECONDS = 12
 USBIP_PORT_MIN = 1
 USBIP_PORT_MAX = 255
+TRANSPORT_LOCK_BUDGET_SECONDS = 2.0
+
+
+def _transport_lock_timeout(timeout: float) -> float:
+    return min(TRANSPORT_LOCK_BUDGET_SECONDS, max(0.1, float(timeout)))
+
+
+def is_transport_lock_contention(message: str) -> bool:
+    normalized = (message or "").lower()
+    return "transport lock contention" in normalized or (
+        "another usb/ip mutation is running" in normalized
+    ) or "timed out waiting to attach" in normalized or "timed out waiting to detach" in normalized
 
 
 @dataclass(frozen=True)
@@ -238,11 +250,11 @@ def attach_device(
     if not operation_coordinator.acquire_named(
         "usbip-transport",
         "global",
-        timeout=max(1, timeout),
+        timeout=_transport_lock_timeout(timeout),
     ):
         return CommandResult(
             success=False,
-            message=f"Timed out waiting to attach {busid}; another USB/IP mutation is running.",
+            message=f"Transport lock contention while attaching {busid}; retry later.",
         )
     try:
         return _attach_device_locked(host_ip, busid, timeout, vid, pid)
@@ -278,11 +290,11 @@ def detach_busid(
     if not operation_coordinator.acquire_named(
         "usbip-transport",
         "global",
-        timeout=max(1, timeout),
+        timeout=_transport_lock_timeout(timeout),
     ):
         return CommandResult(
             success=False,
-            message=f"Timed out waiting to detach {busid}; another USB/IP mutation is running.",
+            message=f"Transport lock contention while detaching {busid}; retry later.",
         )
 
     try:
@@ -364,7 +376,13 @@ def _parse_attached_output(stdout: str) -> list[AttachedDevice]:
             uri_match = re.search(r"usbip://[^\s/]+/([^\s]+)", stripped, re.IGNORECASE)
             if uri_match:
                 current["busid"] = uri_match.group(1)
-            vid_match = re.search(r"([0-9a-fA-F]{4})\s*:\s*([0-9a-fA-F]{4})", stripped)
+                # IPv6 hosts contain arbitrary hexadecimal colon pairs. They
+                # are transport location data, never a VID:PID field.
+                continue
+            vid_match = re.search(
+                r"\(([0-9a-fA-F]{4})\s*:\s*([0-9a-fA-F]{4})\)",
+                stripped,
+            )
             if vid_match:
                 current["vid"] = vid_match.group(1).lower()
                 current["pid"] = vid_match.group(2).lower()

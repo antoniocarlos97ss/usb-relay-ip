@@ -18,6 +18,7 @@ from client.core import (
     usbip_worker,
     usbip_wrapper,
 )
+from client.core.lifecycle import resolve_live_shutdown_sessions
 from client.gui.device_table import ClientDeviceTable
 from client.gui.log_viewer import LogViewer
 from client.gui.settings_dialog import ClientSettingsDialog
@@ -235,10 +236,12 @@ class ClientMainWindow(QMainWindow):
             vid=device.vid,
             pid=device.pid,
         )
-        worker.finished.connect(self._on_attach_finished)
         worker.finished.connect(
             lambda *args, vid=device.vid, pid=device.pid, b=busid: operation_coordinator.release(vid, pid, b)
         )
+        # Release the inter-process operation lock before the completion
+        # callback can schedule stale-session recovery.
+        worker.finished.connect(self._on_attach_finished)
         worker.finished.connect(worker.deleteLater)
         worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
         self._workers.append(worker)
@@ -552,66 +555,93 @@ class ClientMainWindow(QMainWindow):
         self.hide()
         self._tray.show_notification("USBRelay", t("notify.tray_client"))
 
-    def _detach_all_devices(self):
-        if not self._port_map:
-            return
-        logger.info(f"Detaching {len(self._port_map)} devices before quit")
-        import time
-        for busid, port in list(self._port_map.items()):
-            device = self._find_device_in_cache(busid)
-            if not device:
-                logger.warning("Cannot safely detach %s during shutdown: identity unavailable", busid)
-                continue
-            logger.info(f"Detaching {busid} (cached port {port}, live validation required)")
-            result = usbip_wrapper.detach_busid(
-                busid,
-                port_hint=port,
-                expected_vid=device.vid,
-                expected_pid=device.pid,
+    def _resolve_live_shutdown_sessions(
+        self,
+        local_timeout: float = 2.0,
+        host_timeout: float = 1.0,
+    ):
+        """Return only live sessions whose identity is safe to mutate."""
+        local_query = usbip_wrapper.query_attached_devices(
+            timeout=max(0.1, local_timeout)
+        )
+        if not local_query.success:
+            logger.warning(
+                "Cannot enumerate live USB/IP sessions during shutdown: %s",
+                local_query.error,
             )
-            if result.success:
-                logger.info(f"Detached {busid}")
-                if not self._shutting_down:
-                    self._tray.show_notification("USBRelay", t("notify.detached", busid=busid))
-            else:
-                logger.warning(f"Detach failed for {busid}: {result.message}")
-            time.sleep(0.3)
-        self._port_map.clear()
+            return []
 
-    def detach_all_async(self):
-        """Non-blocking detach: fires DetachWorker for every known port."""
-        if not self._port_map:
+        host_devices = []
+        host_reachable = False
+        try:
+            host_devices = self._api_client.get_devices(timeout=max(0.1, host_timeout))
+            host_reachable = self._api_client.is_connected()
+        except Exception:
+            logger.warning(
+                "Host is unreachable during shutdown identity validation; "
+                "using unique cache identities only",
+                exc_info=True,
+            )
+
+        cached_devices = list(getattr(self._device_table, "_devices", []) or [])
+        sessions, rejected = resolve_live_shutdown_sessions(
+            local_query.devices,
+            host_devices=host_devices,
+            cached_devices=cached_devices,
+            host_reachable=host_reachable,
+        )
+        for reason in rejected:
+            logger.warning("Refusing shutdown detach: %s", reason)
+        return sessions
+
+    def detach_all_async(
+        self,
+        local_timeout: float = 2.0,
+        host_timeout: float = 1.0,
+    ):
+        """Start identity-checked detach workers for all live local sessions."""
+        sessions = self._resolve_live_shutdown_sessions(
+            local_timeout=local_timeout,
+            host_timeout=host_timeout,
+        )
+        if not sessions:
+            self._port_map.clear()
             return
-        logger.info(f"Async detaching {len(self._port_map)} devices")
+        logger.info("Async detaching %s verified live session(s)", len(sessions))
         usbip_worker.set_shutting_down()
-        ports = list(self._port_map.items())
         self._port_map.clear()
-        for busid, port in ports:
-            device = self._find_device_in_cache(busid)
-            if not device:
-                logger.warning("Cannot safely detach %s during shutdown: identity unavailable", busid)
-                continue
-            if not operation_coordinator.try_acquire(device.vid, device.pid, busid):
-                logger.warning("Cannot detach %s during shutdown: another operation is active", busid)
+        for session in sessions:
+            if not operation_coordinator.try_acquire(
+                session.vid, session.pid, session.busid
+            ):
+                logger.warning(
+                    "Cannot detach %s during shutdown: operation lock is contended",
+                    session.busid,
+                )
                 continue
             worker = usbip_worker.DetachWorker(
-                busid,
-                port=port,
-                expected_vid=device.vid,
-                expected_pid=device.pid,
+                session.busid,
+                port=session.port,
+                expected_vid=session.vid,
+                expected_pid=session.pid,
             )
             worker.finished.connect(
-                lambda success, msg, b=busid: logger.info(
+                lambda success, msg, b=session.busid: logger.info(
                     f"Shutdown detach {b}: {'OK' if success else 'FAIL: ' + msg}"
                 )
             )
             worker.finished.connect(
-                lambda *args, v=device.vid, p=device.pid, b=busid: operation_coordinator.release(v, p, b)
+                lambda *args, v=session.vid, p=session.pid, b=session.busid: operation_coordinator.release(v, p, b)
             )
             worker.finished.connect(worker.deleteLater)
             worker.destroyed.connect(lambda obj=None, w=worker: self._cleanup_worker(w))
             self._workers.append(worker)
-            worker.start()
+            try:
+                worker.start()
+            except Exception:
+                operation_coordinator.release(session.vid, session.pid, session.busid)
+                self._cleanup_worker(worker)
+                logger.exception("Failed to start shutdown detach for %s", session.busid)
 
     def _wait_for_workers(self, timeout_ms: int = 3500):
         workers = list(self._workers)
@@ -630,12 +660,14 @@ class ClientMainWindow(QMainWindow):
                 pass
 
     def force_cleanup(self):
-        logger.info("Force cleanup: cancelling workers and killing owned subprocesses")
+        logger.info("Force cleanup: cancelling workers and killing attach subprocesses only")
         for worker in list(self._workers):
             request_cancel = getattr(worker, "request_cancel", None)
             if callable(request_cancel):
                 request_cancel()
-        usbip_wrapper.kill_all_subprocesses()
+        killable_owner_ids = usbip_worker.active_killable_thread_ids()
+        if killable_owner_ids:
+            usbip_wrapper.kill_all_subprocesses(killable_owner_ids)
         self._wait_for_workers(1500)
 
     def quit_app(self):
@@ -657,5 +689,15 @@ class ClientMainWindow(QMainWindow):
         self._shutting_down = True
         logger.info("Quitting app with bounded, coordinated detach")
         self.quit_app()
-        self.detach_all_async()
+        self.detach_all_async(local_timeout=2.0, host_timeout=1.0)
         self._wait_for_workers(3500)
+
+    def commit_data_request(self):
+        """Fast Windows shutdown path with a strictly bounded detach budget."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        logger.info("Windows commitDataRequest: fast coordinated shutdown")
+        self.quit_app()
+        self.detach_all_async(local_timeout=0.35, host_timeout=0.35)
+        self._wait_for_workers(650)

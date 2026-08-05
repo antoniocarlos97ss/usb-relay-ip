@@ -109,8 +109,23 @@ class TestUsbipWrapper(unittest.TestCase):
         result = attach_device("10.0.0.10", "1-11", timeout=9, vid="1234", pid="abcd")
 
         self.assertTrue(result.success)
-        acquire_named.assert_called_once_with("usbip-transport", "global", timeout=9)
+        self.assertLessEqual(acquire_named.call_args.kwargs["timeout"], 2)
         release_named.assert_called_once_with("usbip-transport", "global")
+
+    @patch("client.core.usbip_wrapper.operation_coordinator.release_named", create=True)
+    @patch("client.core.usbip_wrapper.operation_coordinator.acquire_named", return_value=True, create=True)
+    @patch("client.core.usbip_wrapper._attach_device_locked")
+    def test_attach_caps_transport_lock_budget(
+        self, attach_locked, acquire_named, release_named
+    ):
+        from client.core.usbip_wrapper import attach_device
+
+        attach_locked.return_value = CommandResult(success=True, message="attached")
+
+        result = attach_device("10.0.0.10", "1-11", timeout=9, vid="1234", pid="abcd")
+
+        self.assertTrue(result.success)
+        self.assertLessEqual(acquire_named.call_args.kwargs["timeout"], 2)
 
     def test_detach_device_success(self):
         with patch("client.core.usbip_wrapper._run_command") as mock_run:
@@ -188,6 +203,26 @@ class TestUsbipWrapper(unittest.TestCase):
 
         self.assertEqual(
             [(3, "1-11", "1234", "abcd"), (4, "2-4.1", "5678", "ef01")],
+            [(item.port, item.busid, item.vid, item.pid) for item in attached],
+        )
+
+    def test_list_attached_does_not_parse_ipv6_uri_as_vid_pid(self):
+        text_output = (
+            "Imported USB devices\r\n"
+            "====================\r\n"
+            "Port 05: device in use at High Speed(480Mbps)\r\n"
+            "         Widget (5678:ef01)\r\n"
+            "           -> usbip://2001:db8:1234:abcd::1:3240/3-7\r\n"
+            "           -> remote bus/dev 003/007\r\n"
+        )
+        with patch("client.core.usbip_wrapper._run_command") as mock_run:
+            mock_run.return_value = (0, text_output, "")
+            from client.core.usbip_wrapper import list_attached
+
+            attached = list_attached()
+
+        self.assertEqual(
+            [(5, "3-7", "5678", "ef01")],
             [(item.port, item.busid, item.vid, item.pid) for item in attached],
         )
 

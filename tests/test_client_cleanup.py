@@ -58,10 +58,12 @@ class ClientCleanupTests(unittest.TestCase):
 
     def test_emergency_cleanup_only_kills_owned_usbip_children(self):
         with patch("client.core.usbip_wrapper.kill_all_subprocesses") as kill_owned, \
+             patch("client.core.usbip_worker.active_killable_thread_ids", return_value={101}) as owners, \
              patch("subprocess.run") as global_taskkill:
             main._emergency_cleanup()
 
-        kill_owned.assert_called_once()
+        owners.assert_called_once_with()
+        kill_owned.assert_called_once_with({101})
         global_taskkill.assert_not_called()
 
     def test_gui_cleanup_does_not_force_release_active_operation_locks(self):
@@ -159,6 +161,34 @@ class ClientCleanupTests(unittest.TestCase):
 
         self.assertEqual(2, calls)
 
+    def test_headless_attach_loop_retries_after_poll_exception(self):
+        stop = __import__("threading").Event()
+        configured = Mock(vid="1234", pid="abcd")
+        config = Mock(
+            host_ip="10.0.0.10",
+            host_port=5757,
+            api_key="",
+            permanent_devices=[configured],
+        )
+        api_client = Mock()
+        calls = 0
+
+        def poll():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("temporary host poll failure")
+            stop.set()
+            return []
+
+        api_client.get_devices.side_effect = poll
+        api_client.is_connected.return_value = False
+        with patch("client.core.config_manager.load_config", return_value=config), \
+             patch("client.api.host_client.HostApiClient", return_value=api_client):
+            main.run_headless(retry_seconds=0, stop_event=stop)
+
+        self.assertEqual(2, calls)
+
     def test_headless_refuses_ambiguous_identical_devices(self):
         from shared.models import UsbDevice
 
@@ -243,7 +273,7 @@ class ClientCleanupTests(unittest.TestCase):
                 self.calls += 1
                 return self.calls > 1
 
-        with patch("client.core.pnp_recovery.PnpRecoveryMonitor", return_value=monitor):
+        with patch("client.core.pnp_recovery.PnpRecoveryCore", return_value=monitor):
             main._monitor_headless(
                 api_client,
                 initial,
@@ -254,6 +284,60 @@ class ClientCleanupTests(unittest.TestCase):
         monitor.start.assert_called_once()
         self.assertEqual([initial, refreshed], [item.args[0] for item in monitor.update_devices.call_args_list])
         monitor.stop.assert_called_once()
+
+    def test_headless_monitor_uses_plain_core_without_starting_qthread(self):
+        initial = [Mock(busid="1-11")]
+        api_client = Mock()
+
+        class _StopAfterOneRefresh:
+            def __init__(self):
+                self.calls = 0
+
+            def wait(self, _timeout):
+                self.calls += 1
+                return True
+
+        plain_monitor = Mock()
+        with patch("client.core.pnp_recovery.PnpRecoveryCore", return_value=plain_monitor) as core, \
+             patch("client.core.pnp_recovery.PnpRecoveryMonitor", side_effect=AssertionError("QThread must not start")):
+            main._monitor_headless(
+                api_client,
+                initial,
+                stop_event=_StopAfterOneRefresh(),
+                refresh_seconds=1,
+            )
+
+        core.assert_called_once()
+        plain_monitor.start.assert_called_once()
+        plain_monitor.poll_cycle.assert_called_once()
+        plain_monitor.stop.assert_called_once()
+
+    def test_headless_monitor_continues_after_refresh_exception(self):
+        initial = [Mock(busid="1-11")]
+        api_client = Mock()
+        api_client.get_devices.side_effect = [RuntimeError("temporary poll failure"), []]
+        api_client.is_connected.return_value = True
+
+        class _StopAfterTwoRefreshes:
+            def __init__(self):
+                self.calls = 0
+
+            def wait(self, _timeout):
+                self.calls += 1
+                return self.calls > 2
+
+        plain_monitor = Mock()
+        with patch("client.core.pnp_recovery.PnpRecoveryCore", return_value=plain_monitor), \
+             patch("client.core.config_manager.load_config", side_effect=RuntimeError("config unavailable")):
+            main._monitor_headless(
+                api_client,
+                initial,
+                stop_event=_StopAfterTwoRefreshes(),
+                refresh_seconds=1,
+            )
+
+        self.assertGreaterEqual(plain_monitor.poll_cycle.call_count, 1)
+        plain_monitor.stop.assert_called_once()
 
     def test_headless_boot_task_is_continuous_and_single_instance(self):
         sys.modules.setdefault("winreg", types.ModuleType("winreg"))

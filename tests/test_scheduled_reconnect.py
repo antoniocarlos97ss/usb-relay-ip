@@ -203,6 +203,22 @@ class TestScheduledReconnectController(unittest.TestCase):
 
         self.assertEqual(controller._start_worker.call_count, 2)
 
+    @patch("client.core.scheduled_reconnect.config_manager")
+    def test_transport_lock_contention_does_not_apply_long_cooldown(self, mock_cfg):
+        now = [datetime(2026, 7, 7, 10, 0, tzinfo=timezone.utc)]
+        controller = self._make_controller(now, [_make_device()])
+        key = ("046d", "c31c")
+
+        controller._on_worker_result(
+            False,
+            "1-5",
+            "Timed out waiting to attach 1-5; transport lock contention",
+            key,
+            Mock(),
+        )
+
+        self.assertNotIn(key, controller._failed_until)
+
 
 class TestScheduledReconnectCycle(unittest.TestCase):
     def test_host_state_wait_rejects_duplicate_busid(self):
@@ -300,6 +316,7 @@ class TestScheduledReconnectCycle(unittest.TestCase):
             api,
             _make_device(state="Shared"),
             record_completion=False,
+            identity_confirmed=True,
         )
 
         self.assertTrue(success)
@@ -309,7 +326,7 @@ class TestScheduledReconnectCycle(unittest.TestCase):
     @patch("client.core.scheduled_reconnect._wait_host_state", return_value=True, create=True)
     @patch("client.core.scheduled_reconnect.config_manager")
     @patch("client.core.scheduled_reconnect.usbip_wrapper")
-    def test_reconnect_cycle_without_local_port_still_cycles_host(
+    def test_reconnect_cycle_without_local_port_fails_closed(
         self, mock_usbip, mock_cfg, wait_host_state, wait_pnp
     ):
         mock_cfg.load_config.return_value = Mock(
@@ -330,15 +347,34 @@ class TestScheduledReconnectCycle(unittest.TestCase):
 
         success, message = _run_reconnect_cycle(api_client, _make_device(state="Attached"))
 
-        self.assertTrue(success, message)
+        self.assertFalse(success)
+        self.assertIn("local session", message.lower())
         mock_usbip.detach_busid.assert_not_called()
-        api_client.unbind_device.assert_called_once_with("1-5")
-        api_client.bind_device.assert_called_once_with("1-5")
-        self.assertEqual(
-            ["Not shared", "Shared"],
-            [item.args[2] for item in wait_host_state.call_args_list],
-        )
-        mock_usbip.attach_device.assert_called_once()
+        api_client.unbind_device.assert_not_called()
+        api_client.bind_device.assert_not_called()
+        wait_host_state.assert_not_called()
+        mock_usbip.attach_device.assert_not_called()
+
+    @patch("client.core.scheduled_reconnect._wait_pnp_healthy", return_value=True, create=True)
+    @patch("client.core.scheduled_reconnect._wait_host_state", return_value=True)
+    @patch("client.core.scheduled_reconnect.config_manager")
+    @patch("client.core.scheduled_reconnect.usbip_wrapper")
+    def test_scheduled_reconnect_refuses_attached_host_without_local_session(
+        self, mock_usbip, mock_cfg, wait_host_state, wait_pnp
+    ):
+        mock_usbip.query_attached_devices.return_value = Mock(success=True, devices=(), error="")
+        api_client = Mock(host_ip="192.168.1.10")
+        api_client.get_devices.return_value = [_make_device(state="Attached")]
+        api_client.unbind_device.return_value = True
+        api_client.bind_device.return_value = True
+
+        success, message = _run_reconnect_cycle(api_client, _make_device(state="Attached"))
+
+        self.assertFalse(success)
+        self.assertIn("local session", message.lower())
+        api_client.unbind_device.assert_not_called()
+        api_client.bind_device.assert_not_called()
+        mock_usbip.attach_device.assert_not_called()
 
     @patch("client.core.scheduled_reconnect._wait_pnp_healthy", return_value=False, create=True)
     @patch("client.core.scheduled_reconnect._wait_host_state", return_value=True)
@@ -354,7 +390,11 @@ class TestScheduledReconnectCycle(unittest.TestCase):
         api_client.unbind_device.return_value = True
         api_client.bind_device.return_value = True
 
-        success, message = _run_reconnect_cycle(api_client, _make_device(state="Attached"))
+        success, message = _run_reconnect_cycle(
+            api_client,
+            _make_device(state="Attached"),
+            identity_confirmed=True,
+        )
 
         self.assertFalse(success)
         self.assertIn("PnP", message)
@@ -385,11 +425,98 @@ class TestScheduledReconnectCycle(unittest.TestCase):
             api_client,
             _make_device(state="Attached"),
             cancel_event=cancelled,
+            identity_confirmed=True,
         )
 
         self.assertFalse(success)
         self.assertIn("interrupted", message)
         mock_usbip.attach_device.assert_not_called()
+
+    @patch("client.core.scheduled_reconnect._wait_host_state")
+    @patch("client.core.scheduled_reconnect.config_manager")
+    @patch("client.core.scheduled_reconnect.usbip_wrapper")
+    def test_cancel_after_unbind_rebinds_host_before_return(
+        self, mock_usbip, mock_cfg, wait_host_state
+    ):
+        cancelled = threading.Event()
+        mock_usbip.query_attached_devices.return_value = Mock(success=True, devices=(), error="")
+
+        def wait_state(*args, **kwargs):
+            if args[2] == "Not shared":
+                cancelled.set()
+                return False
+            return True
+
+        wait_host_state.side_effect = wait_state
+        api_client = Mock(host_ip="192.168.1.10")
+        api_client.get_devices.return_value = [_make_device(state="Attached")]
+        api_client.unbind_device.return_value = True
+        api_client.bind_device.return_value = True
+
+        success, message = _run_reconnect_cycle(
+            api_client,
+            _make_device(state="Attached"),
+            cancel_event=cancelled,
+            identity_confirmed=True,
+        )
+
+        self.assertFalse(success)
+        self.assertIn("interrupted", message)
+        self.assertEqual(1, api_client.bind_device.call_count)
+        self.assertGreaterEqual(
+            sum(item.args[2] == "Shared" for item in wait_host_state.call_args_list),
+            1,
+        )
+
+    @patch("client.core.scheduled_reconnect._wait_host_state", return_value=True)
+    @patch("client.core.scheduled_reconnect.config_manager")
+    @patch("client.core.scheduled_reconnect.usbip_wrapper")
+    def test_bind_failure_attempts_compensatory_rebind(
+        self, mock_usbip, mock_cfg, wait_host_state
+    ):
+        mock_usbip.query_attached_devices.return_value = Mock(success=True, devices=(), error="")
+        api_client = Mock(host_ip="192.168.1.10")
+        api_client.get_devices.return_value = [_make_device(state="Attached")]
+        api_client.unbind_device.return_value = True
+        api_client.bind_device.side_effect = [False, True]
+
+        success, message = _run_reconnect_cycle(
+            api_client,
+            _make_device(state="Attached"),
+            cancel_event=threading.Event(),
+            identity_confirmed=True,
+        )
+
+        self.assertFalse(success)
+        self.assertIn("bind", message.lower())
+        self.assertEqual(2, api_client.bind_device.call_count)
+        self.assertGreaterEqual(
+            sum(item.args[2] == "Shared" for item in wait_host_state.call_args_list),
+            1,
+        )
+
+    @patch("client.core.scheduled_reconnect._wait_host_state", side_effect=[True, False, True])
+    @patch("client.core.scheduled_reconnect.config_manager")
+    @patch("client.core.scheduled_reconnect.usbip_wrapper")
+    def test_shared_timeout_attempts_compensatory_rebind(
+        self, mock_usbip, mock_cfg, wait_host_state
+    ):
+        mock_usbip.query_attached_devices.return_value = Mock(success=True, devices=(), error="")
+        api_client = Mock(host_ip="192.168.1.10")
+        api_client.get_devices.return_value = [_make_device(state="Attached")]
+        api_client.unbind_device.return_value = True
+        api_client.bind_device.return_value = True
+
+        success, message = _run_reconnect_cycle(
+            api_client,
+            _make_device(state="Attached"),
+            identity_confirmed=True,
+        )
+
+        self.assertFalse(success)
+        self.assertIn("Shared", message)
+        self.assertEqual(2, api_client.bind_device.call_count)
+        self.assertEqual(3, wait_host_state.call_count)
 
     @patch("client.core.scheduled_reconnect.time.sleep")
     def test_host_state_wait_rejects_replacement_at_same_busid(self, sleep):
@@ -421,10 +548,30 @@ class TestScheduledReconnectCycle(unittest.TestCase):
         api_client.get_devices.side_effect = [[expected], [replacement]]
         local_query.return_value = AttachedDevicesQuery(True, ())
 
-        success, message = _run_reconnect_cycle_unlocked(api_client, expected)
+        success, message = _run_reconnect_cycle_unlocked(
+            api_client,
+            expected,
+            identity_confirmed=True,
+        )
 
         self.assertFalse(success)
         self.assertIn("identity changed", message.lower())
+        api_client.unbind_device.assert_not_called()
+
+    @patch("client.core.scheduled_reconnect.usbip_wrapper.query_attached_devices")
+    def test_reconnect_reports_host_unreachable_before_mutation(self, local_query):
+        from client.core.usbip_wrapper import AttachedDevicesQuery
+
+        expected = _make_device(state="Attached")
+        api_client = Mock(host_ip="192.168.1.10")
+        api_client.get_devices.return_value = []
+        api_client.is_connected.return_value = False
+        local_query.return_value = AttachedDevicesQuery(True, ())
+
+        success, message = _run_reconnect_cycle_unlocked(api_client, expected)
+
+        self.assertFalse(success)
+        self.assertIn("unreachable", message.lower())
         api_client.unbind_device.assert_not_called()
 
     @patch("client.core.scheduled_reconnect.config_manager")
