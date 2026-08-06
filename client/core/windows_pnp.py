@@ -148,11 +148,18 @@ def _session_uses_installer_root(path: str) -> bool:
 
 
 @contextmanager
-def _session_file_lock(path: str, timeout: float, *, create_parent: bool):
+def _session_file_lock(
+    path: str,
+    timeout: float,
+    *,
+    create_parent: bool,
+    deadline: float | None = None,
+):
     parent = os.path.dirname(path) or "."
     if create_parent:
         os.makedirs(parent, exist_ok=True)
-    deadline = time.monotonic() + max(0.1, timeout)
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, float(timeout))
     stream = None
     try:
         stream = open(path, "a+b")
@@ -169,9 +176,10 @@ def _session_file_lock(path: str, timeout: float, *, create_parent: bool):
                     msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
-                    if time.monotonic() >= deadline:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         raise TimeoutError(f"Timed out locking {path}")
-                    time.sleep(0.05)
+                    time.sleep(min(0.05, remaining))
             try:
                 yield stream
             finally:
@@ -185,9 +193,10 @@ def _session_file_lock(path: str, timeout: float, *, create_parent: bool):
                     fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         raise TimeoutError(f"Timed out locking {path}")
-                    time.sleep(0.05)
+                    time.sleep(min(0.05, remaining))
             try:
                 yield stream
             finally:
@@ -201,13 +210,18 @@ def _session_file_lock(path: str, timeout: float, *, create_parent: bool):
 
 
 @contextmanager
-def _session_storage_lock(timeout: float = 5.0):
+def _session_storage_lock(
+    timeout: float = 5.0,
+    *,
+    deadline: float | None = None,
+):
     """Acquire the persistent correlation lock without creating ProgramData."""
     lock_path = _session_path() + ".lock"
     with _session_file_lock(
         lock_path,
         timeout,
         create_parent=not _session_uses_installer_root(lock_path),
+        deadline=deadline,
     ):
         yield
 
@@ -215,7 +229,7 @@ def _session_storage_lock(timeout: float = 5.0):
 @contextmanager
 def _session_transaction_lock(timeout: float = 5.0):
     """Acquire in-process and file locks within one shared deadline."""
-    deadline = time.monotonic() + max(0.01, float(timeout))
+    deadline = time.monotonic() + max(0.0, float(timeout))
     remaining = max(0.0, deadline - time.monotonic())
     if not _SESSION_LOCK.acquire(timeout=remaining):
         raise TimeoutError("Timed out acquiring the PnP session memory lock")
@@ -223,7 +237,7 @@ def _session_transaction_lock(timeout: float = 5.0):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("PnP session storage lock budget exhausted")
-        with _session_storage_lock(timeout=remaining):
+        with _session_storage_lock(timeout=remaining, deadline=deadline):
             yield
     finally:
         _SESSION_LOCK.release()
@@ -902,11 +916,6 @@ def _find_reenumerated_code43(
         return []
 
     if correlation is None:
-        # Without a recorded correlation the failure node can only be
-        # attributed safely when this is the sole attached session.
-        attached = list(attached_devices)
-        if len(attached) == 1 and attached[0].busid == busid:
-            return failures
         return []
 
     present_ids = {_normalize_instance_id(item.instance_id) for item in statuses}
@@ -974,13 +983,8 @@ def find_session_code43(
         if correlated:
             return correlated
 
-    exact = find_code43(vid, pid, statuses)
-    same_vid_pid = [
-        item for item in attached_devices
-        if (item.vid.lower(), item.pid.lower()) == (vid.lower(), pid.lower())
-    ]
-    if len(same_vid_pid) == 1 and same_vid_pid[0].busid == busid and len(exact) == 1:
-        return exact
+    if correlation is None:
+        return []
 
     return _find_reenumerated_code43(
         busid,

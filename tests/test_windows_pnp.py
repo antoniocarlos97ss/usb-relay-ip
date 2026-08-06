@@ -2,6 +2,7 @@ import json
 import multiprocessing
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -98,6 +99,86 @@ class WindowsPnpTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertLess(elapsed, 0.15)
         self.assertIn("held-by-other-thread", windows_pnp._SESSION_CORRELATIONS)
+
+    def test_record_session_port_does_not_round_up_zero_timeout(self):
+        import client.core.windows_pnp as windows_pnp
+
+        class ContendedMemoryLock:
+            released = False
+
+            def acquire(self, timeout):
+                self.acquire_timeout = timeout
+                return False
+
+            def release(self):
+                self.released = True
+
+        memory_lock = ContendedMemoryLock()
+        with unittest.mock.patch.object(windows_pnp, "_SESSION_LOCK", memory_lock):
+            result = windows_pnp.record_session_port(
+                "1-11",
+                "1234",
+                "abcd",
+                7,
+                timeout=0.0,
+            )
+
+        self.assertFalse(result)
+        self.assertEqual(0.0, memory_lock.acquire_timeout)
+        self.assertFalse(memory_lock.released)
+
+    def test_record_session_port_preserves_deadline_after_memory_lock_delay(self):
+        import client.core.windows_pnp as windows_pnp
+
+        clock = [0.0]
+        sleep_calls = []
+
+        class DelayedMemoryLock:
+            released = False
+
+            def acquire(self, timeout):
+                self.acquire_timeout = timeout
+                clock[0] += 0.95
+                return True
+
+            def release(self):
+                self.released = True
+
+        class ContendedFcntl:
+            LOCK_EX = 1
+            LOCK_NB = 2
+            LOCK_UN = 4
+
+            @staticmethod
+            def flock(_fd, _operation):
+                raise BlockingIOError
+
+        def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            clock[0] += seconds
+
+        memory_lock = DelayedMemoryLock()
+        with (
+            unittest.mock.patch.object(windows_pnp, "_SESSION_LOCK", memory_lock),
+            unittest.mock.patch.object(windows_pnp.time, "monotonic", side_effect=lambda: clock[0]),
+            unittest.mock.patch.object(windows_pnp.time, "sleep", side_effect=fake_sleep),
+            unittest.mock.patch.object(windows_pnp.os, "name", "posix"),
+            unittest.mock.patch.dict(sys.modules, {"fcntl": ContendedFcntl()}),
+        ):
+            result = windows_pnp.record_session_port(
+                "1-11",
+                "1234",
+                "abcd",
+                7,
+                timeout=1.0,
+            )
+
+        self.assertFalse(result)
+        self.assertAlmostEqual(1.0, memory_lock.acquire_timeout)
+        self.assertTrue(memory_lock.released)
+        self.assertLessEqual(clock[0], 1.0)
+        self.assertEqual(1, len(sleep_calls))
+        self.assertAlmostEqual(0.05, sleep_calls[0])
 
     def test_query_timeout_uses_bounded_wait_after_kill(self):
         class FakeProcess:
@@ -351,6 +432,21 @@ class WindowsPnpTests(unittest.TestCase):
 
         self.assertEqual([], matched)
 
+    def test_find_session_code43_refuses_single_vid_pid_match_without_mapping(self):
+        statuses = _parse_statuses(json.dumps([
+            {"PNPDeviceID": r"USB\VID_1234&PID_ABCD\A", "ConfigManagerErrorCode": 43},
+        ]))
+
+        matched = find_session_code43(
+            "1-2",
+            "1234",
+            "abcd",
+            statuses,
+            [AttachedDevice(port=1, busid="1-2", vid="1234", pid="abcd")],
+        )
+
+        self.assertEqual([], matched)
+
     def _register_session(self, busid: str, vid: str, pid: str, instance_id: str):
         before = PnpSnapshot(devices=tuple(), observed_at=1.0)
         payload = json.dumps([{"PNPDeviceID": instance_id, "ConfigManagerErrorCode": 0}])
@@ -453,7 +549,7 @@ class WindowsPnpTests(unittest.TestCase):
             [item.instance_id for item in matched],
         )
 
-    def test_descriptor_failure_without_correlation_requires_single_session(self):
+    def test_descriptor_failure_without_correlation_is_not_attributed(self):
         statuses = _parse_statuses(json.dumps([{
             "PNPDeviceID": r"USB\VID_0000&PID_0002\5&104B56B8&0&2",
             "ConfigManagerErrorCode": 43,
@@ -461,7 +557,7 @@ class WindowsPnpTests(unittest.TestCase):
         single = [AttachedDevice(port=1, busid="1-2", vid="1234", pid="abcd")]
         multiple = single + [AttachedDevice(port=2, busid="1-3", vid="9999", pid="0001")]
 
-        self.assertEqual(statuses, find_session_code43("1-2", "1234", "abcd", statuses, single))
+        self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, single))
         self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, multiple))
 
     def test_descriptor_failure_not_attributed_when_multiple_sessions_vanished(self):
@@ -505,7 +601,7 @@ class WindowsPnpTests(unittest.TestCase):
         self.assertEqual((r"USB\VID_1234&PID_ABCD\OLD",), correlation.instance_ids)
         self.assertEqual(7, correlation.local_port)
 
-    def test_port_only_record_allows_single_session_conservative_fallback(self):
+    def test_port_only_record_does_not_allow_single_session_fallback(self):
         import client.core.windows_pnp as windows_pnp
 
         windows_pnp.record_session_port("1-2", "1234", "abcd", 7)
@@ -515,10 +611,7 @@ class WindowsPnpTests(unittest.TestCase):
         }]))
         attached = [AttachedDevice(port=7, busid="1-2", vid="1234", pid="abcd")]
 
-        self.assertEqual(
-            statuses,
-            find_session_code43("1-2", "1234", "abcd", statuses, attached),
-        )
+        self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, attached))
 
     def test_session_storage_error_is_unknown_and_fails_closed(self):
         import client.core.windows_pnp as windows_pnp
