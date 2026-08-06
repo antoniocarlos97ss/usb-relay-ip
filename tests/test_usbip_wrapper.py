@@ -66,14 +66,22 @@ class TestUsbipWrapper(unittest.TestCase):
             result = attach_device("192.168.1.10", "1-11", vid="1234", pid="abcd")
 
         self.assertTrue(result.success)
-        record_port.assert_called_once_with("1-11", "1234", "abcd", 7)
+        record_port.assert_called_once_with(
+            "1-11",
+            "1234",
+            "abcd",
+            7,
+            timeout=5.0,
+        )
         self.assertEqual(7, register.call_args.kwargs["local_port"])
         self.assertEqual(12, register.call_args.kwargs["poll_timeout"])
 
     def test_attach_caps_pnp_correlation_poll_to_requested_timeout(self):
         with patch("client.core.usbip_wrapper._run_command") as mock_run, \
              patch("client.core.usbip_wrapper.sys.platform", "win32"), \
+             patch("client.core.windows_pnp.remove_session_correlation", return_value=True) as remove, \
              patch("client.core.windows_pnp.snapshot_usb_devices") as snapshot, \
+             patch("client.core.windows_pnp.record_session_port") as record_port, \
              patch("client.core.windows_pnp.register_attached_session") as register:
             mock_run.return_value = (0, "successfully attached to port 7\r\n", "")
             snapshot.return_value = object()
@@ -89,7 +97,16 @@ class TestUsbipWrapper(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
+        remove.assert_called_once_with("1-11", timeout=1.0)
+        record_port.assert_called_once_with(
+            "1-11",
+            "1234",
+            "abcd",
+            7,
+            timeout=1.0,
+        )
         self.assertEqual(2, register.call_args.kwargs["poll_timeout"])
+        self.assertEqual(1.0, register.call_args.kwargs["storage_timeout"])
 
     def test_attach_invalidates_stale_correlation_even_without_snapshot_or_port(self):
         with patch("client.core.usbip_wrapper._run_command", return_value=(0, "attached", "")), \
@@ -101,7 +118,7 @@ class TestUsbipWrapper(unittest.TestCase):
             result = attach_device("192.168.1.10", "1-11", vid="1234", pid="abcd")
 
         self.assertTrue(result.success)
-        remove.assert_called_once_with("1-11")
+        remove.assert_called_once_with("1-11", timeout=5.0)
 
     def test_attach_refuses_when_pnp_correlation_cannot_be_invalidated(self):
         with patch("client.core.usbip_wrapper._run_command") as run, \
@@ -290,14 +307,15 @@ class TestUsbipWrapper(unittest.TestCase):
 
             result = detach_busid(
                 "1-11",
+                timeout=2,
                 port_hint=3,
                 expected_vid="1234",
                 expected_pid="abcd",
             )
 
         self.assertTrue(result.success)
-        detach.assert_called_once_with(3, timeout=30)
-        remove.assert_called_once_with("1-11")
+        detach.assert_called_once_with(3, timeout=2)
+        remove.assert_called_once_with("1-11", timeout=1.0)
 
     def test_detach_busid_rejects_live_identity_mismatch(self):
         replacement = AttachedDevicesQuery(

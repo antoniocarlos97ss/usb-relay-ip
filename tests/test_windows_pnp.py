@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
@@ -67,6 +68,36 @@ class WindowsPnpTests(unittest.TestCase):
         self._legacy_path_patcher.stop()
         self._path_patcher.stop()
         self._tempdir.cleanup()
+
+    def test_record_session_port_timeout_covers_in_process_lock_contention(self):
+        import client.core.windows_pnp as windows_pnp
+
+        lock_held = threading.Event()
+
+        def hold_session_lock():
+            with windows_pnp._SESSION_LOCK:
+                windows_pnp._SESSION_CORRELATIONS["held-by-other-thread"] = object()
+                lock_held.set()
+                time.sleep(0.25)
+
+        holder = threading.Thread(target=hold_session_lock)
+        holder.start()
+        self.assertTrue(lock_held.wait(1))
+
+        started = time.monotonic()
+        result = windows_pnp.record_session_port(
+            "1-11",
+            "1234",
+            "abcd",
+            7,
+            timeout=0.05,
+        )
+        elapsed = time.monotonic() - started
+        holder.join(1)
+
+        self.assertFalse(result)
+        self.assertLess(elapsed, 0.15)
+        self.assertIn("held-by-other-thread", windows_pnp._SESSION_CORRELATIONS)
 
     def test_query_timeout_uses_bounded_wait_after_kill(self):
         class FakeProcess:
@@ -220,6 +251,49 @@ class WindowsPnpTests(unittest.TestCase):
             {r"ROOT\USBIP\0001", r"USB\VID_1234&PID_ABCD\TOKEN"},
             {item.instance_id for item in correlated},
         )
+
+    def test_register_attached_session_forwards_storage_timeout(self):
+        before = PnpSnapshot(devices=tuple(_parse_statuses("[]")), observed_at=1.0)
+        after = PnpSnapshot(
+            devices=tuple(
+                _parse_statuses(
+                    json.dumps(
+                        [
+                            {
+                                "PNPDeviceID": r"ROOT\USBIP\0001",
+                                "ConfigManagerErrorCode": 0,
+                                "ContainerId": "{c1}",
+                            },
+                            {
+                                "PNPDeviceID": r"USB\VID_1234&PID_ABCD\TOKEN",
+                                "ConfigManagerErrorCode": 0,
+                                "Parent": r"ROOT\USBIP\0001",
+                                "ContainerId": "{c1}",
+                            },
+                        ]
+                    )
+                )
+            ),
+            observed_at=2.0,
+        )
+
+        with unittest.mock.patch("client.core.windows_pnp.sys.platform", "win32"), \
+             unittest.mock.patch("client.core.windows_pnp.snapshot_usb_devices", return_value=after), \
+             unittest.mock.patch(
+                 "client.core.windows_pnp._store_session_correlation",
+                 return_value=True,
+             ) as store:
+            ok, _basis = register_attached_session(
+                "1-2",
+                "1234",
+                "abcd",
+                before,
+                poll_timeout=1,
+                storage_timeout=0.25,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(0.25, store.call_args.kwargs["timeout"])
 
     def test_register_attached_session_refuses_ambiguous_unknown_delta(self):
         before = PnpSnapshot(devices=tuple(_parse_statuses("[]")), observed_at=1.0)

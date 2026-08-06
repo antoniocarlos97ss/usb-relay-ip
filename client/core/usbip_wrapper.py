@@ -18,6 +18,7 @@ _subprocesses: list[subprocess.Popen] = []
 _subprocess_owners: dict[subprocess.Popen, int] = {}
 _subprocess_lock = threading.RLock()
 PNP_CORRELATION_TIMEOUT_SECONDS = 12
+PNP_STORAGE_LOCK_TIMEOUT_SECONDS = 5.0
 USBIP_PORT_MIN = 1
 USBIP_PORT_MAX = 255
 TRANSPORT_LOCK_BUDGET_SECONDS = 2.0
@@ -25,6 +26,13 @@ TRANSPORT_LOCK_BUDGET_SECONDS = 2.0
 
 def _transport_lock_timeout(timeout: float) -> float:
     return min(TRANSPORT_LOCK_BUDGET_SECONDS, max(0.1, float(timeout)))
+
+
+def _pnp_storage_lock_timeout(timeout: float) -> float:
+    return min(
+        PNP_STORAGE_LOCK_TIMEOUT_SECONDS,
+        max(0.1, float(timeout) / 2),
+    )
 
 
 def is_transport_lock_contention(message: str) -> bool:
@@ -187,11 +195,15 @@ def _attach_device_locked(
     vid: str = "",
     pid: str = "",
 ) -> CommandResult:
+    storage_timeout = _pnp_storage_lock_timeout(timeout)
     before_snapshot = None
     if vid and pid and sys.platform == "win32":
         try:
             from client.core import windows_pnp
-            if not windows_pnp.remove_session_correlation(busid):
+            if not windows_pnp.remove_session_correlation(
+                busid,
+                timeout=storage_timeout,
+            ):
                 return CommandResult(
                     success=False,
                     message=f"Failed to invalidate safe PnP correlation for {busid}.",
@@ -223,7 +235,13 @@ def _attach_device_locked(
         try:
             from client.core import windows_pnp
             if assigned_port is not None:
-                windows_pnp.record_session_port(busid, vid, pid, assigned_port)
+                windows_pnp.record_session_port(
+                    busid,
+                    vid,
+                    pid,
+                    assigned_port,
+                    timeout=storage_timeout,
+                )
             if before_snapshot is not None:
                 mapped, reason = windows_pnp.register_attached_session(
                     busid,
@@ -235,6 +253,7 @@ def _attach_device_locked(
                         min(PNP_CORRELATION_TIMEOUT_SECONDS, int(timeout)),
                     ),
                     local_port=assigned_port,
+                    storage_timeout=storage_timeout,
                 )
                 if not mapped:
                     logger.warning("Attached %s but PnP correlation was not recorded safely: %s", busid, reason)
@@ -336,7 +355,10 @@ def detach_busid(
         if result.success:
             try:
                 from client.core import windows_pnp
-                windows_pnp.remove_session_correlation(busid)
+                windows_pnp.remove_session_correlation(
+                    busid,
+                    timeout=_pnp_storage_lock_timeout(timeout),
+                )
             except Exception:
                 logger.exception("Detached %s but failed to clear its persisted session", busid)
         return result

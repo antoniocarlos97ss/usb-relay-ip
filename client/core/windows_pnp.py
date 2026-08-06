@@ -212,6 +212,36 @@ def _session_storage_lock(timeout: float = 5.0):
         yield
 
 
+@contextmanager
+def _session_transaction_lock(timeout: float = 5.0):
+    """Acquire in-process and file locks within one shared deadline."""
+    deadline = time.monotonic() + max(0.01, float(timeout))
+    remaining = max(0.0, deadline - time.monotonic())
+    if not _SESSION_LOCK.acquire(timeout=remaining):
+        raise TimeoutError("Timed out acquiring the PnP session memory lock")
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("PnP session storage lock budget exhausted")
+        with _session_storage_lock(timeout=remaining):
+            yield
+    finally:
+        _SESSION_LOCK.release()
+
+
+@contextmanager
+def _session_mutation_lock(timeout: float = 5.0):
+    """Clear partial cache state only for failures while both locks are held."""
+    global _SESSION_CORRELATIONS_LOADED
+    with _session_transaction_lock(timeout):
+        try:
+            yield
+        except (PermissionError, OSError, TimeoutError):
+            _SESSION_CORRELATIONS.clear()
+            _SESSION_CORRELATIONS_LOADED = False
+            raise
+
+
 def _valid_local_port(value) -> int | None:
     try:
         port = int(value)
@@ -684,7 +714,14 @@ def get_session_correlation(busid: str) -> SessionCorrelation | None:
     return correlation
 
 
-def record_session_port(busid: str, vid: str, pid: str, port: int) -> bool:
+def record_session_port(
+    busid: str,
+    vid: str,
+    pid: str,
+    port: int,
+    *,
+    timeout: float = 5.0,
+) -> bool:
     global _SESSION_CORRELATIONS_LOADED
     try:
         port = int(port)
@@ -693,49 +730,46 @@ def record_session_port(busid: str, vid: str, pid: str, port: int) -> bool:
     if not 1 <= port <= 255:
         raise ValueError(f"Invalid USB/IP port {port}; expected 1..255")
 
-    with _SESSION_LOCK:
-        try:
-            with _session_storage_lock():
-                _SESSION_CORRELATIONS_LOADED = False
-                _load_session_correlations_locked()
-                existing = _SESSION_CORRELATIONS.get(busid)
-                if (
-                    existing is not None
-                    and existing.instance_ids
-                    and (existing.vid, existing.pid) == (vid.lower(), pid.lower())
-                ):
-                    # Preserve a real PnP identity; a port is only an
-                    # additional hint and must not replace it.
-                    correlation = SessionCorrelation(
-                        busid=busid,
-                        vid=existing.vid,
-                        pid=existing.pid,
-                        instance_ids=existing.instance_ids,
-                        observed_at=time.time(),
-                        basis=existing.basis,
-                        local_port=port,
-                    )
-                else:
-                    correlation = SessionCorrelation(
-                        busid=busid,
-                        vid=vid.lower(),
-                        pid=pid.lower(),
-                        instance_ids=(),
-                        observed_at=time.time(),
-                        basis="port-only",
-                        local_port=port,
-                    )
-                _SESSION_CORRELATIONS[busid] = correlation
-                if not _save_session_correlations_locked():
-                    _SESSION_CORRELATIONS.clear()
-                    _SESSION_CORRELATIONS_LOADED = False
-                    return False
-                return True
-        except (PermissionError, OSError, TimeoutError) as exc:
-            logger.warning("Failed to record PnP session port for %s: %s", busid, exc)
-            _SESSION_CORRELATIONS.clear()
+    try:
+        with _session_mutation_lock(timeout):
             _SESSION_CORRELATIONS_LOADED = False
-            return False
+            _load_session_correlations_locked()
+            existing = _SESSION_CORRELATIONS.get(busid)
+            if (
+                existing is not None
+                and existing.instance_ids
+                and (existing.vid, existing.pid) == (vid.lower(), pid.lower())
+            ):
+                # Preserve a real PnP identity; a port is only an
+                # additional hint and must not replace it.
+                correlation = SessionCorrelation(
+                    busid=busid,
+                    vid=existing.vid,
+                    pid=existing.pid,
+                    instance_ids=existing.instance_ids,
+                    observed_at=time.time(),
+                    basis=existing.basis,
+                    local_port=port,
+                )
+            else:
+                correlation = SessionCorrelation(
+                    busid=busid,
+                    vid=vid.lower(),
+                    pid=pid.lower(),
+                    instance_ids=(),
+                    observed_at=time.time(),
+                    basis="port-only",
+                    local_port=port,
+                )
+            _SESSION_CORRELATIONS[busid] = correlation
+            if not _save_session_correlations_locked():
+                _SESSION_CORRELATIONS.clear()
+                _SESSION_CORRELATIONS_LOADED = False
+                return False
+            return True
+    except (PermissionError, OSError, TimeoutError) as exc:
+        logger.warning("Failed to record PnP session port for %s: %s", busid, exc)
+        return False
 
 
 def get_session_port(busid: str, vid: str = "", pid: str = "") -> int | None:
@@ -747,25 +781,22 @@ def get_session_port(busid: str, vid: str = "", pid: str = "") -> int | None:
     return correlation.local_port
 
 
-def remove_session_correlation(busid: str) -> bool:
+def remove_session_correlation(busid: str, *, timeout: float = 5.0) -> bool:
     global _SESSION_CORRELATIONS_LOADED
-    with _SESSION_LOCK:
-        try:
-            with _session_storage_lock():
-                _SESSION_CORRELATIONS_LOADED = False
-                _load_session_correlations_locked()
-                if _SESSION_CORRELATIONS.pop(busid, None) is None:
-                    return True
-                if not _save_session_correlations_locked():
-                    _SESSION_CORRELATIONS.clear()
-                    _SESSION_CORRELATIONS_LOADED = False
-                    return False
-                return True
-        except (PermissionError, OSError, TimeoutError) as exc:
-            logger.warning("Failed to remove PnP session correlation for %s: %s", busid, exc)
-            _SESSION_CORRELATIONS.clear()
+    try:
+        with _session_mutation_lock(timeout):
             _SESSION_CORRELATIONS_LOADED = False
-            return False
+            _load_session_correlations_locked()
+            if _SESSION_CORRELATIONS.pop(busid, None) is None:
+                return True
+            if not _save_session_correlations_locked():
+                _SESSION_CORRELATIONS.clear()
+                _SESSION_CORRELATIONS_LOADED = False
+                return False
+            return True
+    except (PermissionError, OSError, TimeoutError) as exc:
+        logger.warning("Failed to remove PnP session correlation for %s: %s", busid, exc)
+        return False
 
 
 def get_busid_for_instance_id(instance_id: str) -> str | None:
@@ -792,24 +823,25 @@ def get_correlated_statuses(busid: str, statuses: list[PnpDeviceStatus]) -> list
     return [item for item in statuses if _normalize_instance_id(item.instance_id) in instance_ids]
 
 
-def _store_session_correlation(correlation: SessionCorrelation) -> bool:
+def _store_session_correlation(
+    correlation: SessionCorrelation,
+    *,
+    timeout: float = 5.0,
+) -> bool:
     global _SESSION_CORRELATIONS_LOADED
-    with _SESSION_LOCK:
-        try:
-            with _session_storage_lock():
-                _SESSION_CORRELATIONS_LOADED = False
-                _load_session_correlations_locked()
-                _SESSION_CORRELATIONS[correlation.busid] = correlation
-                if not _save_session_correlations_locked():
-                    _SESSION_CORRELATIONS.clear()
-                    _SESSION_CORRELATIONS_LOADED = False
-                    return False
-                return True
-        except (PermissionError, OSError, TimeoutError) as exc:
-            logger.warning("Failed to persist PnP correlation for %s: %s", correlation.busid, exc)
-            _SESSION_CORRELATIONS.clear()
+    try:
+        with _session_mutation_lock(timeout):
             _SESSION_CORRELATIONS_LOADED = False
-            return False
+            _load_session_correlations_locked()
+            _SESSION_CORRELATIONS[correlation.busid] = correlation
+            if not _save_session_correlations_locked():
+                _SESSION_CORRELATIONS.clear()
+                _SESSION_CORRELATIONS_LOADED = False
+                return False
+            return True
+    except (PermissionError, OSError, TimeoutError) as exc:
+        logger.warning("Failed to persist PnP correlation for %s: %s", correlation.busid, exc)
+        return False
 
 
 def register_attached_session(
@@ -819,6 +851,7 @@ def register_attached_session(
     before: PnpSnapshot | None,
     poll_timeout: int = 10,
     local_port: int | None = None,
+    storage_timeout: float = 5.0,
 ) -> tuple[bool, str]:
     if sys.platform != "win32":
         return False, "PnP correlation is only available on Windows"
@@ -840,7 +873,10 @@ def register_attached_session(
             local_port=local_port,
         )
         if correlation is not None:
-            if not _store_session_correlation(correlation):
+            if not _store_session_correlation(
+                correlation,
+                timeout=storage_timeout,
+            ):
                 return False, "PnP session storage unavailable"
             return True, correlation.basis
         time.sleep(0.5)
