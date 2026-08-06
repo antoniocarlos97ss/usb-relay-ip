@@ -1,22 +1,24 @@
 import subprocess
 import sys
 import unittest
+from itertools import permutations
 from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
-ORDER_PAIRS = (
-    ("tests.test_usbip_worker", "tests.test_client_cleanup"),
-    ("tests.test_pnp_recovery", "tests.test_client_cleanup"),
-    ("tests.test_device_monitor", "tests.test_client_cleanup"),
-    ("tests.test_client_scheduled_reconnect_ui", "tests.test_usbip_worker"),
-    ("tests.test_client_scheduled_reconnect_ui", "tests.test_pnp_recovery"),
-    ("tests.test_client_scheduled_reconnect_ui", "tests.test_client_cleanup"),
+QT_STUB_MODULES = (
+    "tests.test_usbip_worker",
+    "tests.test_pnp_recovery",
+    "tests.test_device_monitor",
+    "tests.test_scheduled_reconnect",
+    "tests.test_client_scheduled_reconnect_ui",
+    "tests.test_client_cleanup",
 )
+ORDER_PAIRS = tuple(permutations(QT_STUB_MODULES, 2))
 
 
 class TestModuleImportOrder(unittest.TestCase):
-    def test_pyqt_test_modules_import_in_either_relevant_order(self):
+    def test_pyqt_test_modules_import_in_all_ordered_pairs(self):
         for first, second in ORDER_PAIRS:
             with self.subTest(first=first, second=second):
                 result = subprocess.run(

@@ -706,21 +706,27 @@ class ClientMainWindow(QMainWindow):
         if hasattr(self, "_pnp_recovery") and self._pnp_recovery:
             self._pnp_recovery.stop()
 
+    def _finish_shutdown_with_detach(self, *, local_timeout: float, host_timeout: float):
+        deadline = time.monotonic() + (TRANSACTION_SHUTDOWN_WAIT_MS / 1000.0)
+        self.quit_app()
+        self.detach_all_async(local_timeout=local_timeout, host_timeout=host_timeout)
+        remaining_ms = max(0, min(
+            TRANSACTION_SHUTDOWN_WAIT_MS,
+            int((deadline - time.monotonic()) * 1000),
+        ))
+        self._wait_for_transaction_workers(remaining_ms)
+
     def quit_app_with_detach(self):
         if self._shutting_down:
             return
         self._shutting_down = True
         logger.info("Quitting app with bounded, coordinated detach")
-        self.quit_app()
-        self.detach_all_async(local_timeout=2.0, host_timeout=1.0)
-        self._wait_for_transaction_workers(TRANSACTION_SHUTDOWN_WAIT_MS)
+        self._finish_shutdown_with_detach(local_timeout=2.0, host_timeout=1.0)
 
     def commit_data_request(self):
-        """Fast Windows shutdown path with a strictly bounded detach budget."""
+        """Fast Windows shutdown path with one global detach deadline."""
         if self._shutting_down:
             return
         self._shutting_down = True
         logger.info("Windows commitDataRequest: fast coordinated shutdown")
-        self.quit_app()
-        self.detach_all_async(local_timeout=3.0, host_timeout=0.35)
-        self._wait_for_transaction_workers(TRANSACTION_SHUTDOWN_WAIT_MS)
+        self._finish_shutdown_with_detach(local_timeout=3.0, host_timeout=0.35)

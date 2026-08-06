@@ -227,21 +227,46 @@ class ClientLifecycleTests(unittest.TestCase):
         self.assertEqual([True], observed)
         self.assertEqual({}, window._port_map)
 
-    def test_commit_data_request_uses_safe_local_timeout_and_short_host_timeout(self):
+    def test_commit_data_request_uses_one_global_shutdown_deadline(self):
         window = self._new_window()
         window._shutting_down = False
         calls = []
+        clock = iter((100.0, 103.0))
         window.quit_app = lambda: calls.append(("quit",))
         window.detach_all_async = lambda **kwargs: calls.append(("detach", kwargs))
         window._wait_for_transaction_workers = lambda timeout_ms: calls.append(("wait", timeout_ms))
 
-        window.commit_data_request()
+        method_globals = type(window).commit_data_request.__globals__
+        with patch.dict(method_globals, {"time": SimpleNamespace(monotonic=lambda: next(clock))}):
+            window.commit_data_request()
 
         self.assertEqual(
             [
                 ("quit",),
                 ("detach", {"local_timeout": 3.0, "host_timeout": 0.35}),
-                ("wait", 15000),
+                ("wait", 12000),
+            ],
+            calls,
+        )
+
+    def test_explicit_quit_uses_one_global_shutdown_deadline(self):
+        window = self._new_window()
+        window._shutting_down = False
+        calls = []
+        clock = iter((200.0, 202.5))
+        window.quit_app = lambda: calls.append(("quit",))
+        window.detach_all_async = lambda **kwargs: calls.append(("detach", kwargs))
+        window._wait_for_transaction_workers = lambda timeout_ms: calls.append(("wait", timeout_ms))
+
+        method_globals = type(window).quit_app_with_detach.__globals__
+        with patch.dict(method_globals, {"time": SimpleNamespace(monotonic=lambda: next(clock))}):
+            window.quit_app_with_detach()
+
+        self.assertEqual(
+            [
+                ("quit",),
+                ("detach", {"local_timeout": 2.0, "host_timeout": 1.0}),
+                ("wait", 12500),
             ],
             calls,
         )
@@ -278,6 +303,13 @@ class ClientLifecycleTests(unittest.TestCase):
 
         active_ids.assert_called_once_with()
         kill_subprocesses.assert_called_once_with({101, 202})
+
+    def test_shutdown_code_never_uses_unscoped_subprocess_kill(self):
+        source = (Path(__file__).parents[1] / "client" / "gui" / "main_window.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("usbip_wrapper.kill_all_subprocesses()", source)
+        self.assertIn("usbip_wrapper.kill_all_subprocesses(killable_owner_ids)", source)
 
 
 if __name__ == "__main__":

@@ -478,7 +478,7 @@ class PnpRecoveryTests(unittest.TestCase):
         def run_stop():
             try:
                 monitor.stop()
-            except BaseException as exc:  # current code raises RuntimeError from join()
+            except BaseException as exc:  # capture any shutdown regression for assertion
                 errors.append(("stop", exc))
             finally:
                 stop_done.set()
