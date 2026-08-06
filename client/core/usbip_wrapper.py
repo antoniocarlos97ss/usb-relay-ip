@@ -230,7 +230,10 @@ def _attach_device_locked(
                     vid,
                     pid,
                     before_snapshot,
-                    poll_timeout=PNP_CORRELATION_TIMEOUT_SECONDS,
+                    poll_timeout=max(
+                        1,
+                        min(PNP_CORRELATION_TIMEOUT_SECONDS, int(timeout)),
+                    ),
                     local_port=assigned_port,
                 )
                 if not mapped:

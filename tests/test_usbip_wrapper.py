@@ -70,6 +70,27 @@ class TestUsbipWrapper(unittest.TestCase):
         self.assertEqual(7, register.call_args.kwargs["local_port"])
         self.assertEqual(12, register.call_args.kwargs["poll_timeout"])
 
+    def test_attach_caps_pnp_correlation_poll_to_requested_timeout(self):
+        with patch("client.core.usbip_wrapper._run_command") as mock_run, \
+             patch("client.core.usbip_wrapper.sys.platform", "win32"), \
+             patch("client.core.windows_pnp.snapshot_usb_devices") as snapshot, \
+             patch("client.core.windows_pnp.register_attached_session") as register:
+            mock_run.return_value = (0, "successfully attached to port 7\r\n", "")
+            snapshot.return_value = object()
+            register.return_value = (True, "vidpid-delta")
+            from client.core.usbip_wrapper import attach_device
+
+            result = attach_device(
+                "192.168.1.10",
+                "1-11",
+                timeout=2,
+                vid="1234",
+                pid="abcd",
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(2, register.call_args.kwargs["poll_timeout"])
+
     def test_attach_invalidates_stale_correlation_even_without_snapshot_or_port(self):
         with patch("client.core.usbip_wrapper._run_command", return_value=(0, "attached", "")), \
              patch("client.core.usbip_wrapper.sys.platform", "win32"), \

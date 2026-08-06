@@ -55,10 +55,16 @@ class WindowsPnpTests(unittest.TestCase):
             "client.core.windows_pnp._session_path",
             return_value=os.path.join(self._tempdir.name, "sessions.json"),
         )
+        self._legacy_path_patcher = unittest.mock.patch(
+            "client.core.windows_pnp._legacy_session_path",
+            return_value=os.path.join(self._tempdir.name, "legacy-sessions.json"),
+        )
         self._path_patcher.start()
+        self._legacy_path_patcher.start()
         clear_session_correlations()
 
     def tearDown(self):
+        self._legacy_path_patcher.stop()
         self._path_patcher.stop()
         self._tempdir.cleanup()
 

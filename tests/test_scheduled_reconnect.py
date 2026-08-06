@@ -294,15 +294,27 @@ class TestScheduledReconnectCycle(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertEqual(message, "1-5")
+        transport_timeout = 2
+        self.assertLess(transport_timeout, 15)
+        mock_usbip.query_attached_devices.assert_called_once_with(
+            timeout=transport_timeout,
+        )
         mock_usbip.detach_busid.assert_called_once_with(
             "1-5",
+            timeout=transport_timeout,
             port_hint=3,
             expected_vid="046d",
             expected_pid="c31c",
         )
         api_client.unbind_device.assert_called_once_with("1-5")
         api_client.bind_device.assert_called_once_with("1-5")
-        mock_usbip.attach_device.assert_called_once_with("192.168.1.10", "1-5", vid="046d", pid="c31c")
+        mock_usbip.attach_device.assert_called_once_with(
+            "192.168.1.10",
+            "1-5",
+            timeout=transport_timeout,
+            vid="046d",
+            pid="c31c",
+        )
         self.assertEqual(
             ["Not shared", "Shared"],
             [item.args[2] for item in wait_host_state.call_args_list],
@@ -574,6 +586,32 @@ class TestScheduledReconnectCycle(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("identity changed", message.lower())
         api_client.unbind_device.assert_not_called()
+
+    def test_cancel_during_final_identity_revalidation_stops_before_unbind(self):
+        cancelled = threading.Event()
+        expected = _make_device(state="Shared")
+        api_client = Mock(host_ip="192.168.1.10")
+        api_client.get_devices.return_value = [expected]
+
+        def cancel_during_revalidation(*_args, **_kwargs):
+            cancelled.set()
+            return True, ""
+
+        with patch(
+            "client.core.scheduled_reconnect._host_busid_identity_status",
+            side_effect=cancel_during_revalidation,
+        ):
+            success, message = _run_reconnect_cycle_unlocked(
+                api_client,
+                expected,
+                cancel_event=cancelled,
+                identity_confirmed=True,
+            )
+
+        self.assertFalse(success)
+        self.assertIn("interrupted", message)
+        api_client.unbind_device.assert_not_called()
+        api_client.bind_device.assert_not_called()
 
     @patch("client.core.scheduled_reconnect.usbip_wrapper.query_attached_devices")
     def test_reconnect_reports_host_unreachable_before_mutation(self, local_query):

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 FAILURE_COOLDOWN = timedelta(minutes=15)
 HOST_TRANSITION_TIMEOUT_SECONDS = 10
+TRANSPORT_OPERATION_TIMEOUT_SECONDS = 2
 
 
 class HostUnreachableError(RuntimeError):
@@ -215,7 +216,9 @@ def _run_reconnect_cycle_unlocked(
         return False, f"Device {device.vid}:{device.pid} is no longer available"
 
     if matched.state == "Attached":
-        local_query = usbip_wrapper.query_attached_devices()
+        local_query = usbip_wrapper.query_attached_devices(
+            timeout=TRANSPORT_OPERATION_TIMEOUT_SECONDS,
+        )
         if not local_query.success:
             return False, f"Local USB/IP state is unknown: {local_query.error}"
         local_matches = [item for item in local_query.devices if item.busid == matched.busid]
@@ -236,6 +239,7 @@ def _run_reconnect_cycle_unlocked(
                 return False, "reconnect interrupted during shutdown"
             detach_result = usbip_wrapper.detach_busid(
                 matched.busid,
+                timeout=TRANSPORT_OPERATION_TIMEOUT_SECONDS,
                 port_hint=local_matches[0].port,
                 expected_vid=matched.vid,
                 expected_pid=matched.pid,
@@ -248,6 +252,8 @@ def _run_reconnect_cycle_unlocked(
     identity_ok, identity_reason = _host_busid_identity_status(api_client, matched)
     if not identity_ok:
         return False, f"{identity_reason} before unbind"
+    if cancel_event and cancel_event.is_set():
+        return False, "reconnect interrupted during shutdown"
     try:
         unbound = api_client.unbind_device(matched.busid)
     except Exception as exc:
@@ -331,6 +337,7 @@ def _run_reconnect_cycle_unlocked(
     attach_result = usbip_wrapper.attach_device(
         api_client.host_ip,
         matched.busid,
+        timeout=TRANSPORT_OPERATION_TIMEOUT_SECONDS,
         vid=matched.vid,
         pid=matched.pid,
     )
