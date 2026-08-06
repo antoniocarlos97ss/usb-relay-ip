@@ -683,21 +683,28 @@ def find_descriptor_failure_code43(statuses: list[PnpDeviceStatus]) -> list[PnpD
     ]
 
 
-def _session_correlation_state(busid: str) -> tuple[SessionCorrelation | None, bool]:
-    """Return (correlation, storage_available) for fail-closed callers."""
+def _session_correlations_state() -> tuple[dict[str, SessionCorrelation], bool]:
+    """Return one TTL-filtered correlation snapshot for fail-closed callers."""
     with _SESSION_LOCK:
         try:
             with _session_storage_lock():
                 _load_session_correlations_locked()
-                correlation = _SESSION_CORRELATIONS.get(busid)
-                if correlation and time.time() - correlation.observed_at > SESSION_TTL_SECONDS:
-                    _SESSION_CORRELATIONS.pop(busid, None)
-                    _save_session_correlations_locked()
-                    correlation = None
-                return correlation, True
+                now = time.time()
+                correlations = {
+                    busid: correlation
+                    for busid, correlation in _SESSION_CORRELATIONS.items()
+                    if now - correlation.observed_at <= SESSION_TTL_SECONDS
+                }
+                return correlations, True
         except (PermissionError, OSError, TimeoutError) as exc:
-            logger.warning("PnP session storage unavailable while reading %s: %s", busid, exc)
-            return None, False
+            logger.warning("PnP session storage unavailable while reading correlations: %s", exc)
+            return {}, False
+
+
+def _session_correlation_state(busid: str) -> tuple[SessionCorrelation | None, bool]:
+    """Return (correlation, storage_available) for fail-closed callers."""
+    correlations, storage_available = _session_correlations_state()
+    return correlations.get(busid), storage_available
 
 
 def clear_session_correlations() -> bool:
@@ -813,28 +820,46 @@ def remove_session_correlation(busid: str, *, timeout: float = 5.0) -> bool:
         return False
 
 
-def get_busid_for_instance_id(instance_id: str) -> str | None:
+def _instance_id_owners_from(
+    instance_id: str,
+    correlations: dict[str, SessionCorrelation],
+) -> frozenset[str]:
     normalized = _normalize_instance_id(instance_id)
-    with _SESSION_LOCK:
-        try:
-            with _session_storage_lock():
-                _load_session_correlations_locked()
-                owners = {
-                    busid for busid, correlation in _SESSION_CORRELATIONS.items()
-                    if normalized in correlation.instance_ids
-                }
-        except (PermissionError, OSError, TimeoutError) as exc:
-            logger.warning("PnP session storage unavailable while resolving %s: %s", instance_id, exc)
-            return None
-    return next(iter(owners)) if len(owners) == 1 else None
+    return frozenset(
+        busid for busid, correlation in correlations.items()
+        if normalized in correlation.instance_ids
+    )
+
+
+def _instance_id_owners(instance_id: str) -> tuple[frozenset[str], bool]:
+    """Return (owners, storage_available) without collapsing ambiguity."""
+    correlations, storage_available = _session_correlations_state()
+    if not storage_available:
+        return frozenset(), False
+    return _instance_id_owners_from(instance_id, correlations), True
+
+
+def get_busid_for_instance_id(instance_id: str) -> str | None:
+    owners, storage_available = _instance_id_owners(instance_id)
+    if not storage_available or len(owners) != 1:
+        return None
+    return next(iter(owners))
 
 
 def get_correlated_statuses(busid: str, statuses: list[PnpDeviceStatus]) -> list[PnpDeviceStatus]:
-    correlation, storage_available = _session_correlation_state(busid)
+    correlations, storage_available = _session_correlations_state()
+    correlation = correlations.get(busid)
     if not storage_available or correlation is None or not correlation.instance_ids:
         return []
     instance_ids = set(correlation.instance_ids)
-    return [item for item in statuses if _normalize_instance_id(item.instance_id) in instance_ids]
+    correlated = []
+    for item in statuses:
+        if _normalize_instance_id(item.instance_id) not in instance_ids:
+            continue
+        owners = _instance_id_owners_from(item.instance_id, correlations)
+        if owners == {busid}:
+            correlated.append(item)
+    return correlated
 
 
 def _store_session_correlation(
@@ -902,14 +927,16 @@ def _find_reenumerated_code43(
     correlation: SessionCorrelation | None,
     statuses: list[PnpDeviceStatus],
     attached_devices,
+    correlations: dict[str, SessionCorrelation],
     storage_available: bool = True,
 ) -> list[PnpDeviceStatus]:
     if not storage_available:
         return []
-    failures = [
-        item for item in find_descriptor_failure_code43(statuses)
-        if get_busid_for_instance_id(item.instance_id) in (None, busid)
-    ]
+    failures = []
+    for item in find_descriptor_failure_code43(statuses):
+        owners = _instance_id_owners_from(item.instance_id, correlations)
+        if not owners or owners == {busid}:
+            failures.append(item)
     # More than one VID_0000&PID_0002 failure is inherently ambiguous.  Do
     # not choose the first item, even if one happens to look newer.
     if len(failures) != 1:
@@ -935,8 +962,8 @@ def _find_reenumerated_code43(
         return non_anchor_ids or set(session.instance_ids)
 
     def _correlated_nodes_vanished(session_busid: str) -> bool:
-        session, available = _session_correlation_state(session_busid)
-        if not available or session is None:
+        session = correlations.get(session_busid)
+        if session is None:
             return False
         device_ids = _device_instance_ids(session)
         return bool(device_ids) and not device_ids & present_ids
@@ -946,8 +973,8 @@ def _find_reenumerated_code43(
     for item in attached_devices:
         if item.busid == busid:
             continue
-        other, available = _session_correlation_state(item.busid)
-        if not available or other is None or not _device_instance_ids(other):
+        other = correlations.get(item.busid)
+        if other is None or not _device_instance_ids(other):
             return []
         if _correlated_nodes_vanished(item.busid):
             return []
@@ -961,7 +988,8 @@ def find_session_code43(
     statuses: list[PnpDeviceStatus],
     attached_devices,
 ) -> list[PnpDeviceStatus]:
-    correlation, storage_available = _session_correlation_state(busid)
+    correlations, storage_available = _session_correlations_state()
+    correlation = correlations.get(busid)
     if not storage_available:
         return []
     if correlation and (correlation.vid, correlation.pid) != (vid.lower(), pid.lower()):
@@ -976,10 +1004,13 @@ def find_session_code43(
 
     if correlation is not None:
         instance_ids = set(correlation.instance_ids)
-        correlated = [
-            item for item in statuses
-            if _normalize_instance_id(item.instance_id) in instance_ids and item.problem_code == 43
-        ]
+        correlated = []
+        for item in statuses:
+            if _normalize_instance_id(item.instance_id) not in instance_ids or item.problem_code != 43:
+                continue
+            owners = _instance_id_owners_from(item.instance_id, correlations)
+            if owners == {busid}:
+                correlated.append(item)
         if correlated:
             return correlated
 
@@ -991,5 +1022,6 @@ def find_session_code43(
         correlation,
         statuses,
         attached_devices,
+        correlations,
         storage_available=storage_available,
     )

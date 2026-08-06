@@ -655,12 +655,65 @@ class WindowsPnpTests(unittest.TestCase):
 
         self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, attached))
 
+    def test_expired_in_memory_correlation_is_not_an_owner(self):
+        import client.core.windows_pnp as windows_pnp
+
+        instance_id = r"USB\VID_1234&PID_ABCD\TOKEN"
+        self._register_session("1-2", "1234", "abcd", instance_id)
+        expired_now = time.time() + windows_pnp.SESSION_TTL_SECONDS + 1
+
+        with unittest.mock.patch.object(windows_pnp.time, "time", return_value=expired_now):
+            self.assertIsNone(get_busid_for_instance_id(instance_id))
+            self.assertEqual(
+                [],
+                get_correlated_statuses(
+                    "1-2",
+                    _parse_statuses(json.dumps([{
+                        "PNPDeviceID": instance_id,
+                        "ConfigManagerErrorCode": 43,
+                    }])),
+                ),
+            )
+
     def test_duplicate_instance_ownership_is_ambiguous(self):
         instance_id = r"USB\VID_1234&PID_ABCD\TOKEN"
         self._register_session("1-2", "1234", "abcd", instance_id)
         self._register_session("1-3", "1234", "abcd", instance_id)
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": instance_id,
+            "ConfigManagerErrorCode": 43,
+        }]))
+        attached = [
+            AttachedDevice(port=7, busid="1-2", vid="1234", pid="abcd"),
+            AttachedDevice(port=8, busid="1-3", vid="1234", pid="abcd"),
+        ]
 
         self.assertIsNone(get_busid_for_instance_id(instance_id))
+        self.assertEqual([], get_correlated_statuses("1-2", statuses))
+        self.assertEqual([], find_session_code43("1-2", "1234", "abcd", statuses, attached))
+
+    def test_duplicate_sentinel_ownership_is_not_attributed_to_another_session(self):
+        target_instance = r"USB\VID_1234&PID_ABCD\TOKEN"
+        sentinel = r"USB\VID_0000&PID_0002\FAILURE"
+        self._register_session("1-2", "1234", "abcd", target_instance)
+        self._register_session("1-3", "9999", "0001", sentinel)
+        self._register_session("1-4", "8888", "0002", sentinel)
+        statuses = _parse_statuses(json.dumps([{
+            "PNPDeviceID": sentinel,
+            "ConfigManagerErrorCode": 43,
+        }]))
+
+        self.assertIsNone(get_busid_for_instance_id(sentinel))
+        self.assertEqual(
+            [],
+            find_session_code43(
+                "1-2",
+                "1234",
+                "abcd",
+                statuses,
+                [AttachedDevice(port=7, busid="1-2", vid="1234", pid="abcd")],
+            ),
+        )
 
     def test_session_path_uses_programdata_for_cross_account_state(self):
         import client.core.windows_pnp as windows_pnp
