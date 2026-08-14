@@ -53,6 +53,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-client.txt -r requirements-host.txt
 
+      - name: Smoke-test real PyQt Client startup
+        shell: powershell
+        run: python -m ci.smoke_client_qt_startup
+
       - name: Prepare isolated ProgramData for unit tests
         shell: powershell
         run: |

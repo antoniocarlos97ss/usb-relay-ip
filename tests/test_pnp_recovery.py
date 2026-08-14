@@ -3,6 +3,9 @@ import types
 import unittest
 import threading
 import time
+import subprocess
+import textwrap
+from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 
@@ -52,6 +55,57 @@ class PnpRecoveryTests(unittest.TestCase):
             description="Token",
             state="Attached",
         )
+
+    def test_monitor_initializes_with_cooperative_qthread_mro(self):
+        script = textwrap.dedent(
+            """
+            import sys
+            import types
+            from types import SimpleNamespace
+
+            class CooperativeQThread:
+                def __init__(self, parent=None):
+                    super().__init__()
+
+                def wait(self, *args):
+                    return True
+
+            class Signal:
+                def connect(self, callback):
+                    pass
+
+                def emit(self, *args):
+                    pass
+
+            qtcore = types.ModuleType("PyQt6.QtCore")
+            qtcore.QThread = CooperativeQThread
+            qtcore.pyqtSignal = lambda *args: Signal()
+            pyqt6 = types.ModuleType("PyQt6")
+            pyqt6.QtCore = qtcore
+            sys.modules["PyQt6"] = pyqt6
+            sys.modules["PyQt6.QtCore"] = qtcore
+
+            from client.core.pnp_recovery import PnpRecoveryMonitor
+
+            api_client = SimpleNamespace(
+                host_ip="10.0.0.1",
+                host_port=5757,
+                api_key="",
+            )
+            monitor = PnpRecoveryMonitor(api_client)
+            assert monitor._api_client.host_ip == "10.0.0.1"
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
 
     @patch("client.core.pnp_recovery.usbip_wrapper.query_attached_devices")
     def test_exact_busid_disambiguates_identical_devices(self, query):

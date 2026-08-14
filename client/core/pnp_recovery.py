@@ -374,7 +374,11 @@ def recover_device(
 
 
 class _PnpRecoveryState:
-    def __init__(self, api_client: HostApiClient, parent=None, poll_seconds: int = POLL_SECONDS):
+    def _initialize_recovery_state(
+        self,
+        api_client: HostApiClient,
+        poll_seconds: int = POLL_SECONDS,
+    ):
         self._api_client = HostApiClient(
             host_ip=api_client.host_ip,
             host_port=api_client.host_port,
@@ -577,7 +581,7 @@ class PnpRecoveryCore(_PnpRecoveryState):
         on_recovery_failed=None,
         on_recovery_succeeded=None,
     ):
-        super().__init__(api_client, parent=None, poll_seconds=poll_seconds)
+        self._initialize_recovery_state(api_client, poll_seconds=poll_seconds)
         self._recovery_failed_callback = on_recovery_failed
         self._recovery_succeeded_callback = on_recovery_succeeded
 
@@ -594,7 +598,7 @@ class PnpRecoveryMonitor(QThread, _PnpRecoveryState):
 
     def __init__(self, api_client: HostApiClient, parent=None, poll_seconds: int = POLL_SECONDS):
         QThread.__init__(self, parent)
-        _PnpRecoveryState.__init__(self, api_client, parent=None, poll_seconds=poll_seconds)
+        self._initialize_recovery_state(api_client, poll_seconds=poll_seconds)
 
     def start(self, *args, **kwargs):
         self._prepare_run()
